@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgentNodesRegistry",
+  "description": "Registry schema for remote and local machine profiles running Herdr Agent Gateway.",
+  "type": "object",
+  "required": ["nodes"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "default_node": {
+      "type": "string",
+      "description": "The primary preferred target node identifier. If not specified or unavailable, fallback_order is evaluated."
+    },
+    "fallback_order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Ordered list of node identifiers to attempt when default_node is unspecified or fails health check."
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["endpoint"],
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTP or HTTPS base URL of the gateway (e.g. http://127.0.0.1:9480 or http://100.80.20.10:9480)."
+          },
+          "auth_token": {
+            "type": "string",
+            "description": "Bearer token string or environment variable reference (e.g. 'env:HERDR_GATEWAY_TOKEN')."
+          },
+          "ssh_key": {
+            "type": "object",
+            "description": "SSH key configuration for public-key request signing authentication.",
+            "properties": {
+              "private_key_path": {
+                "type": "string",
+                "default": "~/.ssh/id_ed25519",
+                "description": "Path to local private SSH key used to sign requests."
+              }
+            }
+          },
+          "default_workspace": {
+            "type": "string",
+            "default": "spawned-agents",
+            "description": "Default workspace target on this machine if unspecified."
+          },
+          "default_agent": {
+            "type": "string",
+            "enum": ["opencode", "pi", "dsh", "claude", "claude-code", "antigravity", "agy", "codex", "cursor", "gemini"],
+            "default": "opencode",
+            "description": "Default agent kind to launch if unspecified."
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether this node is eligible for dispatch."
+          },
+          "priority": {
+            "type": "integer",
+            "default": 100,
+            "description": "Numeric priority (lower number = higher priority) used when fallback_order is omitted."
+          },
+          "health_check_path": {
+            "type": "string",
+            "default": "/api/v1/health",
+            "description": "Endpoint path to verify node health and reachability."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional capability tags (e.g. ['local', 'gpu', 'nixos'])."
+          },
+          "yolo_args": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "description": "Custom YOLO auto-approval flags per agent type (e.g. {'pi': ['--yolo'], 'claude': ['--dangerously-skip-permissions']})."
+          }
+        }
+      }
+    }
+  }
+}
