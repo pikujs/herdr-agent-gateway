@@ -5,7 +5,7 @@ let
   agent-spawn-remote = pkgs.stdenv.mkDerivation {
     pname = "agent-spawn-remote";
     version = "0.1.0";
-    src = ../scripts;
+    src = ../skills/spawn_herdr_agent/scripts;
 
     nativeBuildInputs = [ pkgs.makeWrapper ];
 

@@ -36,6 +36,8 @@ If unspecified, it dispatches to the `default_node`, or walks the `fallback_orde
 
 Execute commands using the portable POSIX wrapper:
 ```bash
+/path/to/herdr-agent-gateway/skills/spawn_herdr_agent/scripts/agent-spawn-remote <command> [options]
+# or via the root convenience symlink:
 /path/to/herdr-agent-gateway/scripts/agent-spawn-remote <command> [options]
 ```
 
