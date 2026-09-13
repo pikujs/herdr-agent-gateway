@@ -70,15 +70,47 @@ function handleSetup(): void {
     console.log(`Generated new secret token: ${config.tokenFile}`);
   }
 
+  function loadTemplate(filename: string, replacements: Record<string, string>, fallback: string): string {
+    const candidateDirs = [
+      path.resolve(import.meta.dir, "../../../templates"),
+      path.resolve(import.meta.dir, "../../templates"),
+      path.resolve(import.meta.dir, "../templates"),
+      path.resolve(import.meta.dir, "templates"),
+    ];
+    let content = fallback;
+    for (const d of candidateDirs) {
+      const p = path.join(d, filename);
+      if (fs.existsSync(p)) {
+        try {
+          content = fs.readFileSync(p, "utf8");
+          break;
+        } catch {}
+      }
+    }
+    for (const [key, val] of Object.entries(replacements)) {
+      content = content.replaceAll(`{{${key}}}`, val);
+    }
+    return content;
+  }
+
   // Generate gateway.env template if missing
   const envFile = path.join(config.configDir, "gateway.env");
   if (!fs.existsSync(envFile)) {
-    const defaultEnv = `# Herdr Agent Gateway Environment
+    const defaultEnv = loadTemplate(
+      "gateway.env.template",
+      {
+        HOST: config.host,
+        PORT: String(config.port),
+        DEFAULT_WORKSPACE: config.defaultWorkspace,
+        MAX_PANES: String(config.maxPanes),
+      },
+      `# Herdr Agent Gateway Environment
 HERDR_GATEWAY_HOST=${config.host}
 HERDR_GATEWAY_PORT=${config.port}
 HERDR_GATEWAY_DEFAULT_WORKSPACE=${config.defaultWorkspace}
 HERDR_GATEWAY_MAX_PANES=${config.maxPanes}
-`;
+`
+    );
     fs.writeFileSync(envFile, defaultEnv, { mode: 0o600 });
     console.log(`Created default environment file: ${envFile}`);
   }
@@ -91,7 +123,13 @@ HERDR_GATEWAY_MAX_PANES=${config.maxPanes}
     const bunPath = spawnSync("which", ["bun"], { encoding: "utf8" }).stdout.trim() || "/usr/bin/bun";
     const serverScript = path.resolve(import.meta.dir, "server.ts");
 
-    const unitContent = `[Unit]
+    const unitContent = loadTemplate(
+      "herdr-agent-gateway.service.template",
+      {
+        ENV_FILE: envFile,
+        EXEC_START: `${bunPath} run ${serverScript}`,
+      },
+      `[Unit]
 Description=Herdr Agent Gateway HTTP Daemon
 After=network.target
 
@@ -104,7 +142,8 @@ RestartSec=3s
 
 [Install]
 WantedBy=default.target
-`;
+`
+    );
 
     const unitPath = path.join(systemdUserDir, "herdr-agent-gateway.service");
     fs.writeFileSync(unitPath, unitContent, { mode: 0o644 });

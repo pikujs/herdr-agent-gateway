@@ -1,0 +1,13 @@
+[Unit]
+Description=Herdr Agent Gateway HTTP Daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-{{ENV_FILE}}
+ExecStart={{EXEC_START}}
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

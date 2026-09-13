@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/pikujs/herdr-agent-gateway/main/schemas/herdr_nodes.schema.json",
+  "default_node": "local-workstation",
+  "fallback_order": [
+    "local-workstation"
+  ],
+  "yolo_args": {
+    "pi": ["--yolo"],
+    "claude": ["--dangerously-skip-permissions"],
+    "opencode": ["--yolo"],
+    "codex": ["--yolo"],
+    "dsh": ["--yolo"],
+    "antigravity": ["--yolo"]
+  },
+  "nodes": {
+    "local-workstation": {
+      "endpoint": "http://{{HOST}}:{{PORT}}",
+      "auth_token": "env:HERDR_GATEWAY_TOKEN",
+      "default_workspace": "{{DEFAULT_WORKSPACE}}",
+      "default_agent": "pi",
+      "priority": 10
+    }
+  }
+}

@@ -29,9 +29,11 @@ Secure in-daemon remote dispatch plugin, agent skill, and MCP server for the **H
 
 ```
 herdr-agent-gateway/
-├── AGENTS.md                  # Project rules & exploration order for agents
-├── HANDOFF.md                 # Detailed handoff doc & phase-by-phase roadmap
-├── README.md                  # Project overview
+├── flake.nix                  # Flake packaging (packages, apps, devShells, HM module)
+├── nix/                       # Package derivations and Home Manager module
+│   ├── packages.nix
+│   └── home-manager-module.nix
+├── templates/                 # External service and env templates
 ├── plugins/
 │   └── herdr-remote-gateway/  # In-daemon Herdr plugin (HTTP server & Herdr bindings)
 ├── packages/
@@ -42,6 +44,51 @@ herdr-agent-gateway/
 │   └── agent-spawn-remote     # Client dispatch bash script
 └── schemas/
     └── herdr_nodes.schema.json # Remote machine profiles schema
+```
+
+---
+
+## ❄️ Nix & Home Manager Integration
+
+### 1. Flake Run & Outputs
+```bash
+# Run the client CLI directly
+nix run git+https://gitlab.pikujs.com/pikujs/herdr-agent-gateway.git#client -- health
+
+# Run the gateway server
+nix run git+https://gitlab.pikujs.com/pikujs/herdr-agent-gateway.git#server
+
+# Run the MCP server
+nix run git+https://gitlab.pikujs.com/pikujs/herdr-agent-gateway.git#mcp-server
+```
+
+### 2. Home Manager Configuration
+Import `inputs.herdr-agent-gateway.homeManagerModules.default` into your Home Manager configuration:
+
+```nix
+{ inputs, ... }:
+
+{
+  imports = [
+    inputs.herdr-agent-gateway.homeManagerModules.default
+  ];
+
+  services.herdr-agent-gateway = {
+    enable = true;          # Sets up and enables systemd user service
+    client.enable = true;   # Installs agent-spawn-remote in PATH
+    mcpServer.enable = true;# Installs herdr-mcp-server in PATH
+    host = "127.0.0.1";
+    port = 9480;
+    defaultWorkspace = "spawned-agents";
+
+    # Declarative YOLO args per agent
+    yoloArgs = {
+      pi = [ "--yolo" ];
+      claude = [ "--dangerously-skip-permissions" ];
+      opencode = [ "--yolo" ];
+    };
+  };
+}
 ```
 
 ---

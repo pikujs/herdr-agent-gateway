@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "bin": {
-    "herdr-mcp-server": "dist/index.js"
+    "herdr-mcp-server": "bundle.js"
   },
   "scripts": {
+    "build": "bun build src/index.ts --target bun --outfile bundle.js",
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
