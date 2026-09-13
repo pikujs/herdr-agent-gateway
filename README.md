@@ -329,8 +329,7 @@ herdr-agent-gateway/
 ├── schemas/
 │   └── herdr_nodes.schema.json     # Machine profile registry JSON Schema
 ├── docs/                           # Detailed architecture and API specifications
-├── AGENTS.md                       # Machine rules & development instructions
-└── HANDOFF.md                      # Implementation roadmap & WBS tracker (OP#358)
+└── AGENTS.md                       # Machine rules & development instructions
 ```
 
 ---

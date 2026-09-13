@@ -14,9 +14,8 @@ Tracked in OpenProject as **`OP#358`** (Project: `pikujs-server`).
 ## 🧭 Project Exploration & Source of Truth Order
 When beginning work in this repository, explore and read in this exact order:
 1. **`AGENTS.md`** (This file — project mandates, conventions, and environment rules)
-2. **`HANDOFF.md`** (Detailed architectural breakdown, WBS phase-by-phase status, deliverables, and next tasks)
-3. **`README.md`** (General documentation and quickstart)
-4. OpenProject Work Package **`OP#358`** (Use `python3 /home/pikujs/.gemini/config/skills/openproject/scripts/openproject_cli.py get-work-package --id 358`)
+2. **`README.md`** (General documentation, architecture, and quickstart)
+3. OpenProject Work Package **`OP#358`** (Use `python3 /home/pikujs/.gemini/config/skills/openproject/scripts/openproject_cli.py get-work-package --id 358`)
 
 ---
 
@@ -25,7 +24,6 @@ When beginning work in this repository, explore and read in this exact order:
 ```
 herdr-agent-gateway/
 ├── AGENTS.md                  # Agent mandates and rules of engagement
-├── HANDOFF.md                 # Detailed handoff doc & implementation plan
 ├── README.md                  # General project documentation
 ├── schemas/
 │   └── herdr_nodes.schema.json # DEL-03: Machine profile registry schema
