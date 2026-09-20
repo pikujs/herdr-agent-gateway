@@ -130,9 +130,16 @@ Enable the service and tools in your Home Manager configuration:
 }
 ```
 
-### Option 2: Herdr Plugin System
+### Option 2: Herdr Plugin System (Marketplace or Local Link)
 
-Link or install the plugin directly into your local Herdr multiplexer:
+Install directly from the Herdr Marketplace:
+
+```bash
+# Install from the Herdr plugin index
+herdr plugin install pikujs/herdr-agent-gateway
+```
+
+Or link a local checkout into your multiplexer:
 
 ```bash
 # Link local checkout as a Herdr plugin
