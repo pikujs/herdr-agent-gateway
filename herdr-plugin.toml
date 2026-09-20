@@ -1,1 +1,27 @@
-plugins/herdr-remote-gateway/herdr-plugin.toml
+id = "herdr-remote-gateway"
+name = "Herdr Remote Gateway"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Secure HTTP remote dispatch gateway for AI coding agents."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "status"
+title = "Gateway Status"
+description = "Check health and reachability of the remote agent gateway."
+contexts = ["global"]
+command = ["bun", "src/cli.ts", "status"]
+
+[[actions]]
+id = "restart"
+title = "Restart Gateway"
+description = "Restart the remote agent gateway systemd user service."
+contexts = ["global"]
+command = ["bun", "src/cli.ts", "restart"]
+
+[[actions]]
+id = "setup"
+title = "Setup Gateway Service"
+description = "Install and enable systemd user service for background persistence."
+contexts = ["global"]
+command = ["bun", "src/cli.ts", "setup"]
