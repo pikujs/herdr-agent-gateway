@@ -3,9 +3,10 @@
 ## 🎯 Project Overview
 **Herdr Agent Gateway** is a secure, authenticated integration layer for the **Herdr** terminal multiplexer. It allows external and remote AI coding agents (Claude Code, OpenCode, Cursor, Codex, etc.) to securely request workspace pane splits, register agent sessions, and inject execution prompts into a local developer workstation running Herdr.
 
-The project provides **two primary client interfaces**:
+The project provides **three primary client interfaces**:
 1. **Agent Skill & POSIX CLI** (`skills/spawn_herdr_agent/` + `scripts/agent-spawn-remote`): For CLI-based agents running a portable bash/python script over LAN/VPN.
 2. **MCP Server** (`packages/mcp-server/`): For tool-calling agents speaking the Model Context Protocol directly over SSE/Stdio/HTTP.
+3. **Hermes Plugin** (`plugin.yaml` + `hermes_herdr/`): For [Hermes Agent](https://github.com/NousResearch/hermes-agent) running locally or remotely (NixOS / `hermes plugins install`).
 
 Tracked in OpenProject as **`OP#358`** (Project: `pikujs-server`).
 
@@ -25,6 +26,10 @@ When beginning work in this repository, explore and read in this exact order:
 herdr-agent-gateway/
 ├── AGENTS.md                  # Agent mandates and rules of engagement
 ├── README.md                  # General project documentation
+├── plugin.yaml                # Hermes native plugin manifest
+├── after-install.md           # Hermes post-install display guide
+├── __init__.py                # Hermes plugin root entrypoint (register(ctx))
+├── hermes_herdr/              # Hermes plugin implementation (tools & commands)
 ├── schemas/
 │   └── herdr_nodes.schema.json # DEL-03: Machine profile registry schema
 ├── plugins/

@@ -149,7 +149,30 @@ herdr plugin link plugins/herdr-remote-gateway
 herdr plugin action invoke setup --plugin herdr-remote-gateway
 ```
 
-### Option 3: Standalone Run via Bun
+### Option 3: Hermes Plugin System
+
+Install directly from GitHub into [Hermes Agent](https://github.com/NousResearch/hermes-agent):
+
+```bash
+# Install from GitHub
+hermes plugins install pikujs/herdr-agent-gateway --enable
+
+# Or install in Hermes Desktop via one-click link:
+# hermes://plugin/install?repo=pikujs/herdr-agent-gateway&enable=1
+```
+
+Or configure declaratively in NixOS on your Hermes server:
+
+```nix
+services.hermes-agent = {
+  extraPlugins = [
+    inputs.herdr-agent-gateway
+  ];
+  settings.plugins.enabled = [ "herdr" ];
+};
+```
+
+### Option 4: Standalone Run via Bun
 
 ```bash
 # Run server directly with Bun
@@ -228,7 +251,26 @@ Configure the MCP server in your agent harness (`claude_desktop_config.json`, Op
 * `herdr_send_keys`: Send control sequences (`ctrl+c`, `enter`, `escape`) to an agent.
 * `herdr_close_pane`: Terminate and close a terminal pane.
 
-### 3. REST API (`curl`)
+### 3. Hermes Plugin (Tools & Slash Commands)
+
+When installed in [Hermes Agent](https://github.com/NousResearch/hermes-agent), the plugin registers native tools, a bundled skill, and slash commands:
+
+#### Registered Tools:
+* **`herdr_spawn_agent`**: Spawns an agent in a background Herdr pane locally or on any configured remote machine (`node`, `prompt`, `workspace`, `kind`, `pane_direction`, `focus`).
+* **`herdr_list_nodes`**: Reads configured nodes from `~/.config/herdr_nodes.json` and reports connectivity with `"check_health": true`.
+* **`herdr_node_status`**: Queries version, uptime, and active pane count for a target node.
+
+#### Bundled Skill:
+* Resolvable as `herdr:spawn_herdr_agent` via `skill_view()`.
+
+#### Slash Commands:
+```bash
+/herdr list              # List configured Herdr nodes and online state
+/herdr status [node]     # Show gateway version and active pane capacity
+/herdr spawn <prompt>    # Quick agent spawn on default node
+```
+
+### 4. REST API (`curl`)
 
 ```bash
 # Health check (unauthenticated)
