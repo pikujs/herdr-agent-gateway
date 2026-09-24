@@ -1,4 +1,4 @@
-name: herdr
+name: herdr-agent-gateway
 version: 0.1.0
 description: "Control Herdr terminal multiplexer, split panes, and spawn coding agent sessions locally or across remote nodes."
 author: pikujs

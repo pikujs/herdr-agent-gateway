@@ -26,7 +26,7 @@ def test_plugin_yaml_manifest():
     with open(manifest_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
-    assert data["name"] == "herdr"
+    assert data["name"] == "herdr-agent-gateway"
     assert "version" in data
     assert "provides_tools" in data
     assert "herdr_spawn_agent" in data["provides_tools"]

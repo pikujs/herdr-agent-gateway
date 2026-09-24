@@ -168,7 +168,7 @@ services.hermes-agent = {
   extraPlugins = [
     inputs.herdr-agent-gateway
   ];
-  settings.plugins.enabled = [ "herdr" ];
+  settings.plugins.enabled = [ "herdr-agent-gateway" ];
 };
 ```
 
