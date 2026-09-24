@@ -21,25 +21,48 @@ DEFAULT_GATEWAY_URL = "http://127.0.0.1:9480"
 DEFAULT_TIMEOUT = 10  # seconds
 
 
+def _candidate_config_paths() -> List[Path]:
+    """Return ordered list of candidate paths to locate herdr_nodes.json."""
+    candidates: List[Path] = []
+    if "HERDR_NODES_CONFIG" in os.environ:
+        candidates.append(Path(os.environ["HERDR_NODES_CONFIG"]))
+    if "HERMES_HOME" in os.environ:
+        candidates.append(Path(os.environ["HERMES_HOME"]) / "herdr_nodes.json")
+    candidates.extend([
+        Path.home() / ".config" / "herdr_nodes.json",
+        Path.home() / ".config" / "herdr" / "plugins" / "config" / "herdr-remote-gateway" / "herdr_nodes.json",
+        Path.home() / ".hermes" / "herdr_nodes.json",
+    ])
+    return candidates
+
+
 class HerdrGatewayClient:
     """Client for interacting with local and remote Herdr Agent Gateway endpoints."""
 
     def __init__(self, config_path: Optional[Path] = None):
-        self.config_path = (
-            config_path
-            or Path(os.environ.get("HERDR_NODES_CONFIG", str(DEFAULT_CONFIG_PATH)))
-        )
+        self._explicit_config_path = config_path
+
+    @property
+    def config_path(self) -> Path:
+        """Resolve the active configuration path."""
+        if self._explicit_config_path is not None:
+            return self._explicit_config_path
+        for candidate in _candidate_config_paths():
+            if candidate.exists():
+                return candidate
+        return DEFAULT_CONFIG_PATH
 
     def load_config(self) -> Dict[str, Any]:
         """Load node configuration from disk, falling back to environment variables."""
-        if self.config_path.exists():
+        cfg_path = self.config_path
+        if cfg_path.exists():
             try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
+                with open(cfg_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if isinstance(data, dict):
                         return data
             except Exception as exc:
-                logger.warning("Failed to read Herdr nodes config at %s: %s", self.config_path, exc)
+                logger.warning("Failed to read Herdr nodes config at %s: %s", cfg_path, exc)
 
         # Fallback to environment variables
         env_url = os.environ.get("HERDR_GATEWAY_URL", DEFAULT_GATEWAY_URL)
@@ -54,6 +77,13 @@ class HerdrGatewayClient:
             },
         }
 
+    def _resolve_token(self, token_val: str) -> str:
+        """Expand env:VAR_NAME tokens from the environment if specified."""
+        if token_val.startswith("env:"):
+            env_key = token_val[4:].strip()
+            return os.environ.get(env_key, "")
+        return token_val
+
     def resolve_node(self, node_name: Optional[str] = None) -> Tuple[str, str, str]:
         """Resolve (name, url, token) for the requested node.
 
@@ -67,8 +97,10 @@ class HerdrGatewayClient:
 
         if target_name in nodes:
             node_entry = nodes[target_name]
-            url = str(node_entry.get("url", DEFAULT_GATEWAY_URL)).rstrip("/")
-            token = str(node_entry.get("token", ""))
+            raw_url = node_entry.get("url") or node_entry.get("endpoint") or DEFAULT_GATEWAY_URL
+            url = str(raw_url).rstrip("/")
+            raw_token = str(node_entry.get("token") or node_entry.get("auth_token") or "")
+            token = self._resolve_token(raw_token)
             return target_name, url, token
 
         # If node name is 'localhost' or '127.0.0.1', allow automatic fallback
@@ -173,8 +205,8 @@ class HerdrGatewayClient:
 
         results: List[Dict[str, Any]] = []
         for name, entry in nodes.items():
-            url = str(entry.get("url", "")).rstrip("/")
-            token = str(entry.get("token", ""))
+            url = str(entry.get("url") or entry.get("endpoint", "")).rstrip("/")
+            token = self._resolve_token(str(entry.get("token") or entry.get("auth_token", "")))
             item: Dict[str, Any] = {
                 "name": name,
                 "url": url,

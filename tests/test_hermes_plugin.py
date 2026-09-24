@@ -233,3 +233,25 @@ def test_client_http_error(mock_urlopen, tmp_path):
     assert res["ok"] is False
     assert res["status"] == 401
     assert "401" in res["error"]
+
+
+def test_client_endpoint_and_env_token(tmp_path, monkeypatch):
+    """Verify client parses endpoint and resolves env:VAR_NAME tokens."""
+    monkeypatch.setenv("HERDR_GATEWAY_TOKEN", "resolved-secret-token")
+    config_file = tmp_path / "herdr_nodes.json"
+    config_data = {
+        "default_node": "server1",
+        "nodes": {
+            "server1": {
+                "endpoint": "http://192.168.88.4:9480",
+                "auth_token": "env:HERDR_GATEWAY_TOKEN",
+            },
+        },
+    }
+    config_file.write_text(json.dumps(config_data), encoding="utf-8")
+
+    client = HerdrGatewayClient(config_path=config_file)
+    name, url, token = client.resolve_node("server1")
+    assert name == "server1"
+    assert url == "http://192.168.88.4:9480"
+    assert token == "resolved-secret-token"

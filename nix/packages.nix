@@ -100,6 +100,27 @@ let
     };
   };
 
+  # 5. Hermes Agent Plugin
+  hermes-plugin = pkgs.stdenv.mkDerivation {
+    pname = "herdr-agent-gateway";
+    version = "0.1.0";
+    src = ../.;
+
+    installPhase = ''
+      mkdir -p $out
+      cp plugin.yaml $out/
+      cp after-install.md $out/
+      cp __init__.py $out/
+      cp -r hermes_herdr $out/
+      mkdir -p $out/skills
+      cp -r skills/spawn_herdr_agent $out/skills/
+    '';
+
+    meta = with lib; {
+      description = "Herdr Hermes Agent Plugin";
+    };
+  };
+
 in {
-  inherit herdr-remote-gateway agent-spawn-remote herdr-mcp-server default;
+  inherit herdr-remote-gateway agent-spawn-remote herdr-mcp-server hermes-plugin default;
 }

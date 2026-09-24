@@ -51,6 +51,7 @@
         herdr-remote-gateway = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-remote-gateway;
         herdr-agent-spawn-remote = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).agent-spawn-remote;
         herdr-mcp-server = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-mcp-server;
+        herdr-hermes-plugin = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).hermes-plugin;
       };
 
       # Home Manager Modules
