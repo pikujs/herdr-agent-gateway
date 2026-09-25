@@ -1,7 +1,7 @@
-"""Gateway HTTP client for Herdr nodes.
+"""CLI client for Herdr multiplexer and remote SSH machines.
 
-Communicates with Herdr Agent Gateway instances over LAN/VPN or localhost
-using standard library urllib.
+Interacts directly with the Herdr CLI over its local socket API and OpenSSH
+machine forwarding bridge (herdr --machine <target>).
 """
 
 from __future__ import annotations
@@ -9,250 +9,283 @@ from __future__ import annotations
 import json
 import logging
 import os
-import urllib.error
-import urllib.request
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "herdr_nodes.json"
-DEFAULT_GATEWAY_URL = "http://127.0.0.1:9480"
-DEFAULT_TIMEOUT = 10  # seconds
+STANDARD_HERDR_PATHS = [
+    Path.home() / ".local" / "bin" / "herdr",
+    Path.home() / ".nix-profile" / "bin" / "herdr",
+    Path("/usr/local/bin/herdr"),
+    Path("/run/current-system/sw/bin/herdr"),
+]
 
 
-def _candidate_config_paths() -> List[Path]:
-    """Return ordered list of candidate paths to locate herdr_nodes.json."""
-    candidates: List[Path] = []
-    if "HERDR_NODES_CONFIG" in os.environ:
-        candidates.append(Path(os.environ["HERDR_NODES_CONFIG"]))
-    if "HERMES_HOME" in os.environ:
-        candidates.append(Path(os.environ["HERMES_HOME"]) / "herdr_nodes.json")
-    candidates.extend([
-        Path.home() / ".config" / "herdr_nodes.json",
-        Path.home() / ".config" / "herdr" / "plugins" / "config" / "herdr-remote-gateway" / "herdr_nodes.json",
-        Path.home() / ".hermes" / "herdr_nodes.json",
-    ])
-    return candidates
+class HerdrCLIError(Exception):
+    """Exception raised when a Herdr CLI command fails."""
 
 
-class HerdrGatewayClient:
-    """Client for interacting with local and remote Herdr Agent Gateway endpoints."""
+class HerdrClient:
+    """Client wrapping Herdr CLI for multi-machine agent coordination."""
 
-    def __init__(self, config_path: Optional[Path] = None):
-        self._explicit_config_path = config_path
+    def __init__(self, herdr_bin: Optional[str] = None):
+        self._explicit_bin = herdr_bin
 
-    @property
-    def config_path(self) -> Path:
-        """Resolve the active configuration path."""
-        if self._explicit_config_path is not None:
-            return self._explicit_config_path
-        for candidate in _candidate_config_paths():
-            if candidate.exists():
-                return candidate
-        return DEFAULT_CONFIG_PATH
+    def resolve_herdr_bin(self) -> str:
+        """Find the herdr binary on the system or return a helpful error."""
+        if self._explicit_bin:
+            return self._explicit_bin
 
-    def load_config(self) -> Dict[str, Any]:
-        """Load node configuration from disk, falling back to environment variables."""
-        cfg_path = self.config_path
-        if cfg_path.exists():
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-            except Exception as exc:
-                logger.warning("Failed to read Herdr nodes config at %s: %s", cfg_path, exc)
+        if "HERDR_BIN_PATH" in os.environ and os.path.exists(os.environ["HERDR_BIN_PATH"]):
+            return os.environ["HERDR_BIN_PATH"]
 
-        # Fallback to environment variables
-        env_url = os.environ.get("HERDR_GATEWAY_URL", DEFAULT_GATEWAY_URL)
-        env_token = os.environ.get("HERDR_GATEWAY_TOKEN", "")
-        return {
-            "default_node": "localhost",
-            "nodes": {
-                "localhost": {
-                    "url": env_url,
-                    "token": env_token,
-                }
-            },
-        }
+        found = shutil.which("herdr")
+        if found:
+            return found
 
-    def _resolve_token(self, token_val: str) -> str:
-        """Expand env:VAR_NAME tokens from the environment if specified."""
-        if token_val.startswith("env:"):
-            env_key = token_val[4:].strip()
-            return os.environ.get(env_key, "")
-        return token_val
+        for candidate in STANDARD_HERDR_PATHS:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
 
-    def resolve_node(self, node_name: Optional[str] = None) -> Tuple[str, str, str]:
-        """Resolve (name, url, token) for the requested node.
-
-        If node_name is omitted or empty, resolves the configured default node.
-        """
-        config = self.load_config()
-        nodes = config.get("nodes", {})
-        default_node = config.get("default_node", "localhost")
-
-        target_name = node_name if node_name else default_node
-
-        if target_name in nodes:
-            node_entry = nodes[target_name]
-            raw_url = node_entry.get("url") or node_entry.get("endpoint") or DEFAULT_GATEWAY_URL
-            url = str(raw_url).rstrip("/")
-            raw_token = str(node_entry.get("token") or node_entry.get("auth_token") or "")
-            token = self._resolve_token(raw_token)
-            return target_name, url, token
-
-        # If node name is 'localhost' or '127.0.0.1', allow automatic fallback
-        if target_name in {"localhost", "127.0.0.1", "local"}:
-            url = os.environ.get("HERDR_GATEWAY_URL", DEFAULT_GATEWAY_URL).rstrip("/")
-            token = os.environ.get("HERDR_GATEWAY_TOKEN", "")
-            return target_name, url, token
-
-        raise ValueError(
-            f"Herdr node '{target_name}' is not configured in {self.config_path}. "
-            f"Available nodes: {', '.join(nodes.keys()) or '(none)'}"
+        raise FileNotFoundError(
+            "The 'herdr' executable was not found on PATH or standard locations.\n"
+            "To install Herdr:\n"
+            "  • Linux/macOS: curl -fsSL https://herdr.dev/install | sh\n"
+            "  • NixOS: add pkgs.herdr to system packages or hermesContainerTools\n"
+            "Or set the HERDR_BIN_PATH environment variable."
         )
 
-    def _http_request(
-        self,
-        method: str,
-        url: str,
-        token: str,
-        payload: Optional[Dict[str, Any]] = None,
-        timeout: int = DEFAULT_TIMEOUT,
-    ) -> Dict[str, Any]:
-        """Send an authenticated HTTP request to the gateway."""
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "hermes-herdr-gateway/0.1.0",
-        }
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        data_bytes: Optional[bytes] = None
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-            data_bytes = json.dumps(payload).encode("utf-8")
-
-        req = urllib.request.Request(
-            url=url,
-            data=data_bytes,
-            headers=headers,
-            method=method,
-        )
+    def run_cmd(self, args: List[str], machine: Optional[str] = None, timeout: int = 15) -> subprocess.CompletedProcess:
+        """Execute a herdr command, optionally targeted at a remote machine."""
+        bin_path = self.resolve_herdr_bin()
+        cmd = [bin_path]
+        if machine and machine not in {"local", "localhost"}:
+            cmd.extend(["--machine", machine])
+        cmd.extend(args)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                status_code = response.getcode()
-                raw_body = response.read().decode("utf-8", errors="replace")
-                try:
-                    parsed = json.loads(raw_body)
-                    if isinstance(parsed, dict):
-                        return parsed
-                    return {"ok": True, "status": status_code, "data": parsed}
-                except json.JSONDecodeError:
-                    return {"ok": True, "status": status_code, "raw_response": raw_body}
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as exc:
+            err_msg = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise HerdrCLIError(f"Herdr command failed ({' '.join(cmd)}): {err_msg}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HerdrCLIError(f"Herdr command timed out after {timeout}s: {' '.join(cmd)}") from exc
+
+    def list_machines(self) -> List[Dict[str, Any]]:
+        """List local and saved SSH machines configured in Herdr."""
+        machines: List[Dict[str, Any]] = [
+            {
+                "id": "local",
+                "label": "local",
+                "target": "local",
+                "session": "default",
+                "enabled": True,
+                "is_default": True,
+            }
+        ]
+
+        try:
+            res = self.run_cmd(["machine", "list", "--json"], timeout=5)
+            remote_machines = json.loads(res.stdout)
+            if isinstance(remote_machines, list):
+                for m in remote_machines:
+                    m["is_default"] = False
+                    machines.append(m)
+        except Exception as exc:
+            logger.warning("Failed to query Herdr saved machines: %s", exc)
+
+        return machines
+
+    def list_agents(self, machine: str = "all") -> List[Dict[str, Any]]:
+        """List active agents across machines or for a specific machine."""
+        if machine and machine != "all":
+            return self._list_agents_for_machine(machine)
+
+        # Aggregate across local + all enabled remote machines
+        all_agents: List[Dict[str, Any]] = []
+        machines = self.list_machines()
+        for m in machines:
+            if not m.get("enabled", True):
+                continue
+            m_label = m.get("label", m.get("id", "unknown"))
             try:
-                err_json = json.loads(err_body)
-                err_msg = err_json.get("error") or err_json.get("message") or err_body
-            except Exception:
-                err_msg = err_body
+                agents = self._list_agents_for_machine(m_label)
+                all_agents.extend(agents)
+            except Exception as exc:
+                logger.warning("Failed to query agents on machine '%s': %s", m_label, exc)
+
+        return all_agents
+
+    def _get_workspace_map(self, machine: Optional[str] = None) -> Dict[str, str]:
+        """Map workspace_id -> label for a machine."""
+        target = None if machine in {None, "local", "localhost"} else machine
+        try:
+            res = self.run_cmd(["workspace", "list"], machine=target, timeout=5)
+            data = json.loads(res.stdout)
+            workspaces = data.get("result", {}).get("workspaces", [])
             return {
-                "ok": False,
-                "status": exc.code,
-                "error": f"HTTP {exc.code}: {err_msg}",
+                w.get("workspace_id"): w.get("label") or f"Workspace {w.get('number', '')}"
+                for w in workspaces if w.get("workspace_id")
             }
-        except urllib.error.URLError as exc:
-            return {
-                "ok": False,
-                "status": 0,
-                "error": f"Connection failed to {url}: {exc.reason}",
+        except Exception:
+            return {}
+
+    def _list_agents_for_machine(self, machine: str) -> List[Dict[str, Any]]:
+        """List active agents for a single machine with enriched metadata."""
+        target_machine = None if machine in {"local", "localhost"} else machine
+        ws_map = self._get_workspace_map(target_machine)
+        res = self.run_cmd(["agent", "list"], machine=target_machine, timeout=10)
+        data = json.loads(res.stdout)
+        agents: List[Dict[str, Any]] = []
+
+        raw_list = data.get("result", {}).get("agents", []) if isinstance(data, dict) else []
+        for a in raw_list:
+            ws_id = a.get("workspace_id", "")
+            raw_title = a.get("terminal_title_stripped") or a.get("terminal_title") or ""
+            # Strip symbol prefixes
+            clean_title = raw_title.lstrip("π*•- ").strip()
+            cwd = a.get("cwd") or a.get("foreground_cwd") or ""
+
+            # Derive topic/description
+            parts = [p.strip() for p in raw_title.split("-") if p.strip() and p.strip() not in {"π", "claude", "codex", "opencode", "hermes"}]
+            desc = parts[0] if parts else (Path(cwd).name if cwd else "")
+
+            enriched = {
+                "machine": machine,
+                "agent_type": a.get("agent", "unknown"),
+                "agent_status": a.get("agent_status", "unknown"),
+                "title": clean_title or "(no title)",
+                "description": desc,
+                "cwd": cwd,
+                "workspace_id": ws_id,
+                "workspace_label": ws_map.get(ws_id, ws_id),
+                "pane_id": a.get("pane_id", ""),
+                "tab_id": a.get("tab_id", ""),
+                "focused": a.get("focused", False),
+                "session": a.get("agent_session"),
+                "agent": a.get("agent", "unknown"),
             }
-        except TimeoutError:
-            return {
-                "ok": False,
-                "status": 0,
-                "error": f"Request to {url} timed out after {timeout} seconds",
-            }
+            agents.append(enriched)
+        return agents
+
+    def get_server_status(self, machine: Optional[str] = None) -> Dict[str, Any]:
+        """Query server status and health."""
+        target = None if machine in {None, "local", "localhost"} else machine
+        try:
+            res = self.run_cmd(["status", "server"], machine=target, timeout=5)
+            # Parse key-value lines
+            status_dict: Dict[str, Any] = {"machine": machine or "local", "raw": res.stdout.strip()}
+            for line in res.stdout.splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    status_dict[k.strip()] = v.strip()
+            status_dict["online"] = status_dict.get("status") == "running"
+            return status_dict
         except Exception as exc:
             return {
-                "ok": False,
-                "status": 0,
-                "error": f"Unexpected error communicating with {url}: {exc}",
+                "machine": machine or "local",
+                "online": False,
+                "error": str(exc),
             }
-
-    def get_status(self, node_name: Optional[str] = None) -> Dict[str, Any]:
-        """Fetch status and health info from a Herdr gateway node."""
-        try:
-            resolved_name, base_url, token = self.resolve_node(node_name)
-        except ValueError as exc:
-            return {"ok": False, "node": node_name, "error": str(exc)}
-
-        url = f"{base_url}/status"
-        res = self._http_request("GET", url, token)
-        res["node"] = resolved_name
-        res["url"] = base_url
-        return res
-
-    def list_nodes(self, check_health: bool = False) -> List[Dict[str, Any]]:
-        """List configured nodes, optionally probing health on each."""
-        config = self.load_config()
-        nodes = config.get("nodes", {})
-        default_node = config.get("default_node", "localhost")
-
-        results: List[Dict[str, Any]] = []
-        for name, entry in nodes.items():
-            url = str(entry.get("url") or entry.get("endpoint", "")).rstrip("/")
-            token = self._resolve_token(str(entry.get("token") or entry.get("auth_token", "")))
-            item: Dict[str, Any] = {
-                "name": name,
-                "url": url,
-                "is_default": (name == default_node),
-            }
-            if check_health and url:
-                health = self._http_request("GET", f"{url}/status", token, timeout=2)
-                item["online"] = health.get("ok", False)
-                if health.get("ok"):
-                    item["active_panes"] = health.get("active_panes", 0)
-                    item["max_panes"] = health.get("max_panes")
-                    item["version"] = health.get("version")
-                else:
-                    item["error"] = health.get("error")
-            results.append(item)
-
-        return results
 
     def spawn_agent(
         self,
         prompt: str,
-        node_name: Optional[str] = None,
-        workspace: Optional[str] = None,
-        kind: str = "claude",
         name: Optional[str] = None,
-        pane_direction: str = "right",
-        focus: bool = False,
+        kind: str = "claude",
+        machine: Optional[str] = None,
+        pane_id: Optional[str] = None,
+        split_direction: str = "right",
+        cwd: Optional[str] = None,
+        wait: bool = False,
     ) -> Dict[str, Any]:
-        """Request a pane split and agent launch on the target Herdr node."""
-        try:
-            resolved_name, base_url, token = self.resolve_node(node_name)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+        """Spawn a pane split and start an agent, optionally prompting it."""
+        target_machine = None if machine in {None, "local", "localhost"} else machine
 
-        payload: Dict[str, Any] = {
-            "prompt": prompt,
+        # 1. Ensure pane exists or split one
+        active_pane = pane_id
+        if not active_pane:
+            split_args = ["pane", "split", "--direction", split_direction]
+            if cwd:
+                split_args.extend(["--cwd", cwd])
+            res = self.run_cmd(split_args, machine=target_machine, timeout=10)
+            # stdout typically contains JSON or pane ID string
+            active_pane = res.stdout.strip()
+            # If stdout is JSON like {"id":"cli:pane:split","result":{"pane_id":"w0:p2"}}
+            try:
+                split_json = json.loads(res.stdout)
+                if "result" in split_json and "pane_id" in split_json["result"]:
+                    active_pane = split_json["result"]["pane_id"]
+            except Exception:
+                pass
+
+        session_name = name or f"agent-{os.urandom(3).hex()}"
+
+        # 2. Start agent in pane
+        start_args = ["agent", "start", session_name, "--kind", kind, "--pane", active_pane]
+        self.run_cmd(start_args, machine=target_machine, timeout=30)
+
+        # 3. Prompt agent if prompt provided
+        prompt_res = ""
+        if prompt:
+            prompt_args = ["agent", "prompt", session_name, prompt]
+            if wait:
+                prompt_args.append("--wait")
+            pres = self.run_cmd(prompt_args, machine=target_machine, timeout=300 if wait else 15)
+            prompt_res = pres.stdout.strip()
+
+        return {
+            "ok": True,
+            "machine": machine or "local",
+            "name": session_name,
             "kind": kind,
-            "pane_direction": pane_direction,
-            "focus": focus,
+            "pane_id": active_pane,
+            "prompt_result": prompt_res,
         }
-        if workspace:
-            payload["workspace"] = workspace
-        if name:
-            payload["name"] = name
 
-        url = f"{base_url}/spawn"
-        res = self._http_request("POST", url, token, payload=payload)
-        res["node"] = resolved_name
-        return res
+    def prompt_agent(
+        self,
+        target: str,
+        prompt: str,
+        machine: Optional[str] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """Inject prompt into an existing agent."""
+        target_machine = None if machine in {None, "local", "localhost"} else machine
+        args = ["agent", "prompt", target, prompt]
+        if wait:
+            args.append("--wait")
+        res = self.run_cmd(args, machine=target_machine, timeout=300 if wait else 15)
+        return {
+            "ok": True,
+            "target": target,
+            "machine": machine or "local",
+            "output": res.stdout.strip(),
+        }
+
+    def read_agent(
+        self,
+        target: str,
+        machine: Optional[str] = None,
+        lines: int = 100,
+        source: str = "recent-unwrapped",
+    ) -> Dict[str, Any]:
+        """Read output lines from an agent."""
+        target_machine = None if machine in {None, "local", "localhost"} else machine
+        args = ["agent", "read", target, "--lines", str(lines), "--source", source]
+        res = self.run_cmd(args, machine=target_machine, timeout=10)
+        return {
+            "ok": True,
+            "target": target,
+            "machine": machine or "local",
+            "content": res.stdout.strip(),
+        }

@@ -1,5 +1,5 @@
 {
-  description = "Herdr Agent Gateway — Authenticated remote dispatch plugin, client CLI, and MCP server for Herdr";
+  description = "Herdr Agent Gateway — Multi-machine agent overview, dispatch skill, and Hermes plugin for Herdr";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,27 +17,22 @@
 
         apps = {
           default = flake-utils.lib.mkApp {
-            drv = herdrPackages.herdr-remote-gateway;
-            name = "herdr-remote-gateway";
+            drv = herdrPackages.herdr-agents-overview;
+            name = "herdr-agents-overview";
           };
-          server = flake-utils.lib.mkApp {
-            drv = herdrPackages.herdr-remote-gateway;
-            name = "herdr-remote-gateway";
+          overview = flake-utils.lib.mkApp {
+            drv = herdrPackages.herdr-agents-overview;
+            name = "herdr-agents-overview";
           };
           client = flake-utils.lib.mkApp {
             drv = herdrPackages.agent-spawn-remote;
             name = "agent-spawn-remote";
           };
-          mcp-server = flake-utils.lib.mkApp {
-            drv = herdrPackages.herdr-mcp-server;
-            name = "herdr-mcp-server";
-          };
         };
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            bun
-            nodejs
+            python3
             jq
             curl
             git
@@ -48,9 +43,8 @@
       # Overlays
       overlays.default = final: prev: {
         herdr-agent-gateway = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).default;
-        herdr-remote-gateway = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-remote-gateway;
+        herdr-agents-overview = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-agents-overview;
         herdr-agent-spawn-remote = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).agent-spawn-remote;
-        herdr-mcp-server = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-mcp-server;
         herdr-hermes-plugin = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).hermes-plugin;
       };
 

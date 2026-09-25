@@ -1,19 +1,22 @@
-"""Unit tests for Hermes plugin implementation."""
+"""Unit tests for Hermes plugin implementation with CLI-backed HerdrClient."""
 
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import urllib.error
+import subprocess
 
 import pytest
 import yaml
 
 from hermes_herdr import register
-from hermes_herdr.client import HerdrGatewayClient
+from hermes_herdr.client import HerdrClient, HerdrCLIError
 from hermes_herdr.commands import handle_herdr_command
 from hermes_herdr.tools import (
-    handle_herdr_list_nodes,
+    handle_herdr_list_agents,
+    handle_herdr_list_machines,
     handle_herdr_node_status,
+    handle_herdr_prompt_agent,
+    handle_herdr_read_agent,
     handle_herdr_spawn_agent,
 )
 
@@ -30,7 +33,10 @@ def test_plugin_yaml_manifest():
     assert "version" in data
     assert "provides_tools" in data
     assert "herdr_spawn_agent" in data["provides_tools"]
-    assert "herdr_list_nodes" in data["provides_tools"]
+    assert "herdr_list_machines" in data["provides_tools"]
+    assert "herdr_list_agents" in data["provides_tools"]
+    assert "herdr_prompt_agent" in data["provides_tools"]
+    assert "herdr_read_agent" in data["provides_tools"]
     assert "herdr_node_status" in data["provides_tools"]
     assert "provides_skills" in data
     assert "spawn_herdr_agent" in data["provides_skills"]
@@ -43,11 +49,14 @@ def test_plugin_register_lifecycle():
     mock_ctx = MagicMock()
     register(mock_ctx)
 
-    # 3 tools registered
-    assert mock_ctx.register_tool.call_count == 3
+    # 6 tools registered
+    assert mock_ctx.register_tool.call_count == 6
     registered_tool_names = [call.kwargs["name"] for call in mock_ctx.register_tool.call_args_list]
     assert "herdr_spawn_agent" in registered_tool_names
-    assert "herdr_list_nodes" in registered_tool_names
+    assert "herdr_list_machines" in registered_tool_names
+    assert "herdr_list_agents" in registered_tool_names
+    assert "herdr_prompt_agent" in registered_tool_names
+    assert "herdr_read_agent" in registered_tool_names
     assert "herdr_node_status" in registered_tool_names
 
     # Skill registered
@@ -59,199 +68,165 @@ def test_plugin_register_lifecycle():
     assert mock_ctx.register_command.call_args.args[0] == "herdr"
 
 
-def test_client_fallback_config(tmp_path):
-    """Verify HerdrGatewayClient falls back to env/defaults if config file missing."""
-    non_existent = tmp_path / "missing_nodes.json"
-    client = HerdrGatewayClient(config_path=non_existent)
+def test_client_resolve_bin(monkeypatch):
+    """Verify binary resolution checks env, which, and standard paths."""
+    client = HerdrClient()
 
-    config = client.load_config()
-    assert config["default_node"] == "localhost"
-    assert "localhost" in config["nodes"]
+    # If HERDR_BIN_PATH is set
+    monkeypatch.setenv("HERDR_BIN_PATH", "/custom/bin/herdr")
+    with patch("os.path.exists", return_value=True):
+        assert client.resolve_herdr_bin() == "/custom/bin/herdr"
 
-    name, url, token = client.resolve_node()
-    assert name == "localhost"
-    assert url == "http://127.0.0.1:9480"
+    # If not set, checks which
+    monkeypatch.delenv("HERDR_BIN_PATH", raising=False)
+    with patch("shutil.which", return_value="/usr/bin/herdr"):
+        assert client.resolve_herdr_bin() == "/usr/bin/herdr"
 
-
-def test_client_custom_config(tmp_path):
-    """Verify HerdrGatewayClient correctly parses custom nodes config."""
-    config_file = tmp_path / "herdr_nodes.json"
-    config_data = {
-        "default_node": "server1",
-        "nodes": {
-            "server1": {"url": "http://192.168.88.4:9480", "token": "secret-tok-1"},
-            "pikujs-mini": {"url": "http://192.168.88.15:9480", "token": "secret-tok-2"},
-        },
-    }
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
-
-    client = HerdrGatewayClient(config_path=config_file)
-
-    name, url, token = client.resolve_node()
-    assert name == "server1"
-    assert url == "http://192.168.88.4:9480"
-    assert token == "secret-tok-1"
-
-    name, url, token = client.resolve_node("pikujs-mini")
-    assert name == "pikujs-mini"
-    assert url == "http://192.168.88.15:9480"
-    assert token == "secret-tok-2"
-
-    with pytest.raises(ValueError, match="is not configured"):
-        client.resolve_node("unknown-node")
+    # If not found anywhere, raises FileNotFoundError
+    with patch("shutil.which", return_value=None), patch("os.path.exists", return_value=False), patch("pathlib.Path.exists", return_value=False):
+        with pytest.raises(FileNotFoundError, match="The 'herdr' executable was not found"):
+            client.resolve_herdr_bin()
 
 
-@patch("urllib.request.urlopen")
-def test_client_spawn_agent_success(mock_urlopen, tmp_path):
-    """Verify spawn_agent sends proper HTTP POST request."""
-    config_file = tmp_path / "herdr_nodes.json"
-    config_data = {
-        "default_node": "server1",
-        "nodes": {
-            "server1": {"url": "http://192.168.88.4:9480", "token": "test-token"},
-        },
-    }
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
+@patch.object(HerdrClient, "run_cmd")
+def test_client_list_machines(mock_run):
+    """Verify HerdrClient lists local and remote machines."""
+    mock_run.return_value = subprocess.CompletedProcess(
+        args=["herdr", "machine", "list", "--json"],
+        returncode=0,
+        stdout=json.dumps([
+            {"id": "m1", "label": "server1", "target": "user@server1.local", "enabled": True},
+            {"id": "m2", "label": "predator", "target": "user@predator.local", "enabled": True},
+        ]),
+    )
 
-    mock_resp = MagicMock()
-    mock_resp.getcode.return_value = 200
-    mock_resp.read.return_value = json.dumps({
-        "ok": True,
-        "pane_id": "pane-123",
-        "name": "session-1",
-        "workspace": "default",
-        "kind": "claude",
-    }).encode("utf-8")
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen.return_value = mock_resp
+    client = HerdrClient(herdr_bin="/bin/herdr")
+    machines = client.list_machines()
 
-    client = HerdrGatewayClient(config_path=config_file)
+    assert len(machines) == 3
+    assert machines[0]["id"] == "local"
+    assert machines[0]["is_default"] is True
+    assert machines[1]["label"] == "server1"
+    assert machines[2]["label"] == "predator"
+
+
+@patch.object(HerdrClient, "run_cmd")
+def test_client_list_agents(mock_run):
+    """Verify HerdrClient aggregates agents across machines."""
+    def fake_run(args, machine=None, **kwargs):
+        if "machine" in args and "list" in args:
+            return subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout=json.dumps([{"id": "m1", "label": "server1", "target": "user@server1.local", "enabled": True}])
+            )
+        if "workspace" in args:
+            return subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout=json.dumps({"result": {"workspaces": [{"workspace_id": "w0", "label": "main"}]}})
+            )
+        if "agent" in args and "list" in args:
+            if machine == "server1":
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0,
+                    stdout=json.dumps({"result": {"agents": [{"agent": "claude", "pane_id": "w1:p1", "workspace_id": "w0", "agent_status": "running", "cwd": "/srv"}]}})
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout=json.dumps({"result": {"agents": [{"agent": "pi", "pane_id": "w0:p1", "workspace_id": "w0", "agent_status": "idle", "cwd": "/home"}]}})
+            )
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="{}")
+
+    mock_run.side_effect = fake_run
+
+    client = HerdrClient(herdr_bin="/bin/herdr")
+    agents = client.list_agents(machine="all")
+
+    assert len(agents) == 2
+    assert agents[0]["agent"] == "pi"
+    assert agents[0]["machine"] == "local"
+    assert agents[0]["workspace_label"] == "main"
+    assert agents[1]["agent"] == "claude"
+    assert agents[1]["machine"] == "server1"
+
+
+@patch.object(HerdrClient, "run_cmd")
+def test_client_spawn_agent(mock_run):
+    """Verify HerdrClient spawns pane, starts agent, and prompts."""
+    mock_run.side_effect = [
+        subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps({"result": {"pane_id": "w0:p3"}})
+        ),
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="started"),
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="prompt sent"),
+    ]
+
+    client = HerdrClient(herdr_bin="/bin/herdr")
     res = client.spawn_agent(
         prompt="Fix the bug",
-        node_name="server1",
         kind="claude",
-        pane_direction="right",
+        machine="server1",
+        split_direction="right",
     )
 
     assert res["ok"] is True
-    assert res["pane_id"] == "pane-123"
-    assert res["node"] == "server1"
-
-    req = mock_urlopen.call_args.args[0]
-    assert req.method == "POST"
-    assert req.full_url == "http://192.168.88.4:9480/spawn"
-    assert req.headers["Authorization"] == "Bearer test-token"
-    assert req.headers["Content-type"] == "application/json"
-    sent_payload = json.loads(req.data.decode("utf-8"))
-    assert sent_payload["prompt"] == "Fix the bug"
-    assert sent_payload["kind"] == "claude"
+    assert res["pane_id"] == "w0:p3"
+    assert res["kind"] == "claude"
+    assert res["machine"] == "server1"
 
 
-def test_tool_spawn_agent_validation():
-    """Verify tool handles missing prompt gracefully."""
-    raw = handle_herdr_spawn_agent({})
-    res = json.loads(raw)
-    assert res["ok"] is False
-    assert "Missing required argument" in res["error"]
+@patch("hermes_herdr.tools._client")
+def test_tool_handlers(mock_client):
+    """Verify tool wrappers invoke client methods and return JSON."""
+    mock_client.list_machines.return_value = [{"id": "local", "label": "local"}]
+    mock_client.list_agents.return_value = [{"agent": "claude", "pane_id": "w0:p1"}]
+    mock_client.spawn_agent.return_value = {"ok": True, "pane_id": "w0:p2"}
+    mock_client.prompt_agent.return_value = {"ok": True, "output": "ok"}
+    mock_client.read_agent.return_value = {"ok": True, "content": "agent output"}
+    mock_client.get_server_status.return_value = {"online": True, "version": "0.9.1"}
+
+    out_machines = handle_herdr_list_machines({})
+    assert "local" in out_machines
+
+    out_agents = handle_herdr_list_agents({"machine": "all"})
+    assert "claude" in out_agents
+
+    out_spawn = handle_herdr_spawn_agent({"prompt": "test"})
+    assert "w0:p2" in out_spawn
+
+    out_prompt = handle_herdr_prompt_agent({"target": "agent-1", "prompt": "continue"})
+    assert "ok" in out_prompt
+
+    out_read = handle_herdr_read_agent({"target": "agent-1"})
+    assert "agent output" in out_read
+
+    out_status = handle_herdr_node_status({"machine": "local"})
+    assert "0.9.1" in out_status
 
 
-def test_slash_command_help():
-    """Verify /herdr help output."""
-    out = handle_herdr_command("help")
-    assert "/herdr list" in out
-    assert "/herdr spawn" in out
-    assert "/herdr status" in out
+@patch("hermes_herdr.commands._client")
+def test_commands(mock_client):
+    """Verify /herdr slash command handler."""
+    mock_client.list_machines.return_value = [{"label": "server1", "target": "user@server1", "enabled": True}]
+    mock_client.list_agents.return_value = [{"agent": "pi", "machine": "local", "pane_id": "w0:p1", "agent_status": "idle"}]
+    mock_client.get_server_status.return_value = {"online": True, "status": "running", "version": "0.9.1"}
+    mock_client.spawn_agent.return_value = {"ok": True, "kind": "claude", "name": "a1", "machine": "local", "pane_id": "w0:p2"}
 
+    # Help
+    assert "Herdr Multi-Machine Commands" in handle_herdr_command("help")
 
-def test_slash_command_unknown():
-    """Verify unknown subcommand returns guidance."""
-    out = handle_herdr_command("foobar")
-    assert "Unknown subcommand 'foobar'" in out
+    # Machines
+    out_m = handle_herdr_command("machines")
+    assert "server1" in out_m
 
+    # Agents
+    out_a = handle_herdr_command("agents")
+    assert "w0:p1" in out_a
 
-@patch("urllib.request.urlopen")
-def test_client_status_and_list_nodes(mock_urlopen, tmp_path):
-    """Verify get_status and list_nodes with health checking."""
-    config_file = tmp_path / "herdr_nodes.json"
-    config_data = {
-        "default_node": "localhost",
-        "nodes": {
-            "localhost": {"url": "http://127.0.0.1:9480", "token": "test-token"},
-        },
-    }
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
+    # Status
+    out_s = handle_herdr_command("status")
+    assert "running" in out_s
 
-    mock_resp = MagicMock()
-    mock_resp.getcode.return_value = 200
-    mock_resp.read.return_value = json.dumps({
-        "ok": True,
-        "version": "0.1.0",
-        "active_panes": 2,
-        "max_panes": 8,
-        "allowed_kinds": ["claude", "hermes"],
-    }).encode("utf-8")
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen.return_value = mock_resp
-
-    client = HerdrGatewayClient(config_path=config_file)
-    status = client.get_status("localhost")
-    assert status["ok"] is True
-    assert status["version"] == "0.1.0"
-    assert status["active_panes"] == 2
-
-    nodes = client.list_nodes(check_health=True)
-    assert len(nodes) == 1
-    assert nodes[0]["name"] == "localhost"
-    assert nodes[0]["online"] is True
-    assert nodes[0]["active_panes"] == 2
-
-
-@patch("urllib.request.urlopen")
-def test_client_http_error(mock_urlopen, tmp_path):
-    """Verify client handles HTTP errors properly."""
-    config_file = tmp_path / "herdr_nodes.json"
-    config_data = {
-        "default_node": "localhost",
-        "nodes": {
-            "localhost": {"url": "http://127.0.0.1:9480", "token": "test-token"},
-        },
-    }
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
-
-    error_fp = MagicMock()
-    error_fp.read.return_value = json.dumps({"error": "Unauthorized"}).encode("utf-8")
-    mock_urlopen.side_effect = urllib.error.HTTPError(
-        url="http://127.0.0.1:9480/status",
-        code=401,
-        msg="Unauthorized",
-        hdrs={},
-        fp=error_fp,
-    )
-
-    client = HerdrGatewayClient(config_path=config_file)
-    res = client.get_status("localhost")
-    assert res["ok"] is False
-    assert res["status"] == 401
-    assert "401" in res["error"]
-
-
-def test_client_endpoint_and_env_token(tmp_path, monkeypatch):
-    """Verify client parses endpoint and resolves env:VAR_NAME tokens."""
-    monkeypatch.setenv("HERDR_GATEWAY_TOKEN", "resolved-secret-token")
-    config_file = tmp_path / "herdr_nodes.json"
-    config_data = {
-        "default_node": "server1",
-        "nodes": {
-            "server1": {
-                "endpoint": "http://192.168.88.4:9480",
-                "auth_token": "env:HERDR_GATEWAY_TOKEN",
-            },
-        },
-    }
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
-
-    client = HerdrGatewayClient(config_path=config_file)
-    name, url, token = client.resolve_node("server1")
-    assert name == "server1"
-    assert url == "http://192.168.88.4:9480"
-    assert token == "resolved-secret-token"
+    # Spawn
+    out_sp = handle_herdr_command("spawn write unit tests")
+    assert "Spawned" in out_sp

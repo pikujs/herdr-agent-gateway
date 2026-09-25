@@ -7,11 +7,17 @@ from pathlib import Path
 
 from hermes_herdr.commands import handle_herdr_command
 from hermes_herdr.tools import (
-    LIST_NODES_SCHEMA,
-    NODE_STATUS_SCHEMA,
+    LIST_AGENTS_SCHEMA,
+    LIST_MACHINES_SCHEMA,
+    MACHINE_STATUS_SCHEMA,
+    PROMPT_AGENT_SCHEMA,
+    READ_AGENT_SCHEMA,
     SPAWN_AGENT_SCHEMA,
-    handle_herdr_list_nodes,
+    handle_herdr_list_agents,
+    handle_herdr_list_machines,
     handle_herdr_node_status,
+    handle_herdr_prompt_agent,
+    handle_herdr_read_agent,
     handle_herdr_spawn_agent,
 )
 
@@ -32,16 +38,37 @@ def register(ctx) -> None:
         emoji="🪟",
     )
     ctx.register_tool(
-        name="herdr_list_nodes",
+        name="herdr_list_machines",
         toolset="herdr",
-        schema=LIST_NODES_SCHEMA,
-        handler=handle_herdr_list_nodes,
-        emoji="📋",
+        schema=LIST_MACHINES_SCHEMA,
+        handler=handle_herdr_list_machines,
+        emoji="🖥️",
+    )
+    ctx.register_tool(
+        name="herdr_list_agents",
+        toolset="herdr",
+        schema=LIST_AGENTS_SCHEMA,
+        handler=handle_herdr_list_agents,
+        emoji="🤖",
+    )
+    ctx.register_tool(
+        name="herdr_prompt_agent",
+        toolset="herdr",
+        schema=PROMPT_AGENT_SCHEMA,
+        handler=handle_herdr_prompt_agent,
+        emoji="💬",
+    )
+    ctx.register_tool(
+        name="herdr_read_agent",
+        toolset="herdr",
+        schema=READ_AGENT_SCHEMA,
+        handler=handle_herdr_read_agent,
+        emoji="📖",
     )
     ctx.register_tool(
         name="herdr_node_status",
         toolset="herdr",
-        schema=NODE_STATUS_SCHEMA,
+        schema=MACHINE_STATUS_SCHEMA,
         handler=handle_herdr_node_status,
         emoji="🟢",
     )
@@ -62,8 +89,8 @@ def register(ctx) -> None:
     try:
         ctx.register_command(
             "herdr",
-            handler=handle_herdr_command,
-            description="Control Herdr terminal multiplexer and spawn agent sessions.",
+            handle_herdr_command,
+            description="Manage and inspect multi-machine Herdr workspaces and agents.",
         )
     except Exception as exc:
         logger.warning("Failed to register /herdr command into Hermes: %s", exc)

@@ -1,380 +1,246 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# agent-spawn-remote — Portable POSIX client for Herdr Agent Gateway
-# Resolves machine profiles from herdr_nodes.json and executes remote actions.
+# agent-spawn-remote — Portable POSIX client for Herdr multi-machine dispatch
+# Invokes local and remote Herdr CLI commands directly via SSH forwarding.
 
-NODES_FILE=""
-NODE_ID=""
-HERDR_ENDPOINT=""
-HERDR_TOKEN=""
-HERDR_SSH_KEY=""
-
-# --- Node Profile Discovery ---
-find_nodes_file() {
-  if [ -n "$NODES_FILE" ] && [ -f "$NODES_FILE" ]; then
-    echo "$NODES_FILE"
-    return 0
-  fi
-  if [ -n "${HERDR_NODES_PATH:-}" ] && [ -f "${HERDR_NODES_PATH}" ]; then
-    echo "$HERDR_NODES_PATH"
-    return 0
-  fi
-  if [ -n "${HERDR_AGENT_NODES_PATH:-}" ] && [ -f "${HERDR_AGENT_NODES_PATH}" ]; then
-    echo "$HERDR_AGENT_NODES_PATH"
-    return 0
-  fi
-  local candidates=(
-    "$HOME/.config/herdr/plugins/config/herdr-remote-gateway/herdr_nodes.json"
-    "$HOME/.config/herdr-agent-gateway/herdr_nodes.json"
-    "$HOME/.config/herdr_nodes.json"
-    "$HOME/.config/herdr/plugins/config/herdr-remote-gateway/agent_nodes.json"
-    "$HOME/.config/herdr-agent-gateway/agent_nodes.json"
-    "$HOME/.config/agent_nodes.json"
-  )
-  for c in "${candidates[@]}"; do
-    if [ -f "$c" ]; then
-      echo "$c"
-      return 0
+HERDR_BIN="${HERDR_BIN_PATH:-$(command -v herdr || true)}"
+if [ -z "$HERDR_BIN" ]; then
+  for p in "$HOME/.local/bin/herdr" "$HOME/.nix-profile/bin/herdr" "/usr/local/bin/herdr" "/run/current-system/sw/bin/herdr"; do
+    if [ -x "$p" ]; then
+      HERDR_BIN="$p"
+      break
     fi
   done
-  echo ""
+fi
+
+if [ -z "$HERDR_BIN" ]; then
+  echo "Error: 'herdr' executable not found on PATH or standard locations." >&2
+  echo "Install Herdr via: curl -fsSL https://herdr.dev/install | sh" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OVERVIEW_SCRIPT="$SCRIPT_DIR/../bin/agents-overview.py"
+
+TARGET_MACHINE=""
+
+usage() {
+  cat <<EOF
+Usage: agent-spawn-remote [--machine <target>] <command> [options]
+
+Commands:
+  list machines                  List configured local & remote SSH machines
+  list agents                    List active agents across machines
+  list panes                     List panes on target machine
+  list workspaces                List workspaces on target machine
+  status                         Check server status on target machine
+  spawn [options]                Split pane and start an agent with prompt
+  prompt <target> <text> [--wait] Inject prompt into active agent
+  read <target> [--lines N]      Read output from agent
+  keys <target> <keys>           Send keystrokes to agent (e.g. ctrl+c)
+  close <target>                 Close agent or pane
+
+Options:
+  --machine, --node <name>       Target machine label or ID (default: local)
+  -h, --help                     Show this help message
+EOF
+  exit 1
 }
 
-resolve_node() {
-  local file
-  file=$(find_nodes_file)
-
-  # Check direct environment overrides
-  if [ -n "${HERDR_GATEWAY_ENDPOINT:-}" ]; then
-    HERDR_ENDPOINT="${HERDR_GATEWAY_ENDPOINT%/}"
-    HERDR_TOKEN="${HERDR_GATEWAY_TOKEN:-}"
-    return 0
-  fi
-
-  if [ -z "$file" ] || [ ! -f "$file" ]; then
-    HERDR_ENDPOINT="http://127.0.0.1:9480"
-    if [ -f "$HOME/.config/herdr/plugins/config/herdr-remote-gateway/gateway.token" ]; then
-      HERDR_TOKEN=$(cat "$HOME/.config/herdr/plugins/config/herdr-remote-gateway/gateway.token" | tr -d '\r\n')
-    fi
-    return 0
-  fi
-
-  # Determine target node ID
-  local target_node="$NODE_ID"
-  if [ -z "$target_node" ]; then
-    target_node=$(jq -r '.default_node // empty' "$file" 2>/dev/null || true)
-  fi
-
-  # If default node is missing or failing, evaluate fallback_order
-  if [ -z "$target_node" ]; then
-    local fallbacks
-    fallbacks=$(jq -r '.fallback_order[]? // empty' "$file" 2>/dev/null || true)
-    for fb in $fallbacks; do
-      local ep
-      ep=$(jq -r ".nodes[\"$fb\"].endpoint // empty" "$file" 2>/dev/null || true)
-      if [ -n "$ep" ]; then
-        if curl -s -f -m 2 "$ep/api/v1/health" >/dev/null 2>&1; then
-          target_node="$fb"
-          break
-        fi
-      fi
-    done
-  fi
-
-  # Fall back to first available node in registry
-  if [ -z "$target_node" ]; then
-    target_node=$(jq -r '.nodes | keys[0] // empty' "$file" 2>/dev/null || true)
-  fi
-
-  if [ -z "$target_node" ]; then
-    HERDR_ENDPOINT="http://127.0.0.1:9480"
-    return 0
-  fi
-
-  HERDR_ENDPOINT=$(jq -r ".nodes[\"$target_node\"].endpoint // \"http://127.0.0.1:9480\"" "$file")
-  HERDR_ENDPOINT="${HERDR_ENDPOINT%/}"
-
-  local token_field
-  token_field=$(jq -r ".nodes[\"$target_node\"].auth_token // empty" "$file")
-  if [[ "$token_field" =~ ^env:(.*)$ ]]; then
-    local env_var="${BASH_REMATCH[1]}"
-    HERDR_TOKEN="${!env_var:-}"
-  elif [ -n "$token_field" ]; then
-    HERDR_TOKEN="$token_field"
-  fi
-
-  local ssh_key_field
-  ssh_key_field=$(jq -r ".nodes[\"$target_node\"].ssh_key.private_key_path // empty" "$file")
-  if [ -n "$ssh_key_field" ]; then
-    HERDR_SSH_KEY="${ssh_key_field/#\~/$HOME}"
-  fi
-
-  if [ -z "$HERDR_TOKEN" ] && [ -z "$HERDR_SSH_KEY" ]; then
-    local local_token_file="$HOME/.config/herdr/plugins/config/herdr-remote-gateway/gateway.token"
-    if [ -f "$local_token_file" ]; then
-      HERDR_TOKEN=$(cat "$local_token_file" | tr -d '\r\n')
-    fi
-  fi
-}
-
-send_request() {
-  local method="$1"
-  local path="$2"
-  local body="${3:-}"
-
-  local url="${HERDR_ENDPOINT}${path}"
-  local headers=("-H" "Content-Type: application/json")
-
-  if [ -n "$HERDR_TOKEN" ]; then
-    headers+=("-H" "Authorization: Bearer $HERDR_TOKEN")
-  elif [ -n "$HERDR_SSH_KEY" ] && [ -f "$HERDR_SSH_KEY" ]; then
-    # SSH Signature authentication
-    local timestamp
-    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    local digest
-    digest=$(printf "%s" "$body" | openssl dgst -sha256 -binary | base64)
-
-    # Compute key fingerprint
-    local key_id
-    key_id=$(ssh-keygen -l -f "$HERDR_SSH_KEY" 2>/dev/null | awk '{print $2}' || true)
-
-    local canonical
-    canonical=$(printf "%s\n%s\n%s\n%s" "$method" "$path" "$timestamp" "$digest")
-    local sig_base64
-    sig_base64=$(printf "%s" "$canonical" | openssl dgst -sha256 -sign "$HERDR_SSH_KEY" 2>/dev/null | base64 | tr -d '\n' || true)
-
-    if [ -n "$sig_base64" ] && [ -n "$key_id" ]; then
-      headers+=(
-        "-H" "X-Herdr-Key-Id: $key_id"
-        "-H" "X-Herdr-Timestamp: $timestamp"
-        "-H" "X-Herdr-Digest: SHA-256=$digest"
-        "-H" "X-Herdr-Signature: $sig_base64"
-        "-H" "Authorization: SSH-Signature keyId=\"$key_id\",timestamp=\"$timestamp\",signature=\"$sig_base64\""
-      )
-    fi
-  fi
-
-  if [ "$method" = "GET" ]; then
-    curl -s -S "${headers[@]}" "$url"
+run_herdr() {
+  if [ -n "$TARGET_MACHINE" ] && [ "$TARGET_MACHINE" != "local" ] && [ "$TARGET_MACHINE" != "localhost" ]; then
+    "$HERDR_BIN" --machine "$TARGET_MACHINE" "$@"
   else
-    curl -s -S -X "$method" "${headers[@]}" -d "$body" "$url"
+    "$HERDR_BIN" "$@"
   fi
 }
 
-# --- Command Handlers ---
-cmd_health() {
-  send_request "GET" "/api/v1/health"
-}
-
-cmd_list() {
-  local target="${1:-panes}"
-  case "$target" in
-    workspaces|panes|agents)
-      local snapshot
-      snapshot=$(send_request "GET" "/api/v1/snapshot")
-      echo "$snapshot" | jq ".result.$target // .result.panes // ."
+# Parse global options
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --machine|--node)
+      TARGET_MACHINE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
       ;;
     *)
-      echo "Usage: agent-spawn-remote list [workspaces|panes|agents]" >&2
-      exit 2
+      break
       ;;
   esac
-}
+done
 
-cmd_read() {
-  local pane_id=""
-  local lines=100
-  local format="text"
+if [ $# -eq 0 ]; then
+  usage
+fi
 
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --lines) lines="$2"; shift 2 ;;
-      --format) format="$2"; shift 2 ;;
-      *) pane_id="$1"; shift ;;
-    esac
-  done
+CMD="$1"
+shift
 
-  if [ -z "$pane_id" ]; then
-    echo "Usage: agent-spawn-remote read <pane_id> [--lines N] [--format text|ansi]" >&2
-    exit 2
-  fi
-
-  send_request "GET" "/api/v1/panes/$pane_id?lines=$lines&format=$format"
-}
-
-cmd_spawn() {
-  local kind=""
-  local name=""
-  local prompt=""
-  local workspace=""
-  local direction="right"
-  local cwd=""
-  local sync="true"
-  local approval_mode=""
-  local agent_args=()
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --kind) kind="$2"; shift 2 ;;
-      --name) name="$2"; shift 2 ;;
-      --prompt) prompt="$2"; shift 2 ;;
-      --workspace) workspace="$2"; shift 2 ;;
-      --direction) direction="$2"; shift 2 ;;
-      --cwd) cwd="$2"; shift 2 ;;
-      --approval-mode) approval_mode="$2"; shift 2 ;;
-      --yolo) approval_mode="yolo"; shift ;;
-      --arg) agent_args+=("$2"); shift 2 ;;
-      --async) sync="false"; shift ;;
-      *) echo "Unknown spawn argument: $1" >&2; exit 2 ;;
-    esac
-  done
-
-  if [ -z "$kind" ] || [ -z "$name" ]; then
-    echo "Usage: agent-spawn-remote spawn --kind <kind> --name <name> [--prompt <text>] [--workspace <ws>] [--cwd <path>] [--yolo] [--approval-mode yolo|off|prompt] [--arg <extra_arg>] [--async]" >&2
-    exit 2
-  fi
-
-  local args_json="[]"
-  if [ ${#agent_args[@]} -gt 0 ]; then
-    args_json=$(printf '%s\n' "${agent_args[@]}" | jq -R . | jq -s .)
-  fi
-
-  local payload
-  payload=$(jq -n \
-    --arg kind "$kind" \
-    --arg name "$name" \
-    --arg prompt "$prompt" \
-    --arg workspace "$workspace" \
-    --arg direction "$direction" \
-    --arg cwd "$cwd" \
-    --arg approval_mode "$approval_mode" \
-    --argjson agent_args "$args_json" \
-    '{
-      agent_kind: $kind,
-      agent_name: $name,
-      prompt: (if $prompt == "" then null else $prompt end),
-      workspace: (if $workspace == "" then null else $workspace end),
-      direction: $direction,
-      cwd: (if $cwd == "" then null else $cwd end),
-      focus: false,
-      approval_mode: (if $approval_mode == "" then null else $approval_mode end),
-      agent_args: (if ($agent_args | length) == 0 then null else $agent_args end)
-    }')
-
-  send_request "POST" "/api/v1/agents/spawn?sync=$sync" "$payload"
-}
-
-cmd_prompt() {
-  local agent=""
-  local prompt_text=""
-  local wait="false"
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --agent) agent="$2"; shift 2 ;;
-      --wait) wait="true"; shift ;;
-      *)
-        if [ -z "$prompt_text" ]; then
-          prompt_text="$1"
+case "$CMD" in
+  list)
+    SUBCMD="${1:-}"
+    shift || true
+    case "$SUBCMD" in
+      machines)
+        "$HERDR_BIN" machine list "$@"
+        ;;
+      agents)
+        if [ -n "$TARGET_MACHINE" ]; then
+          run_herdr agent list "$@"
+        elif [ -f "$OVERVIEW_SCRIPT" ]; then
+          python3 "$OVERVIEW_SCRIPT" "$@"
         else
-          prompt_text="$prompt_text $1"
+          "$HERDR_BIN" agent list "$@"
         fi
-        shift
+        ;;
+      panes)
+        run_herdr pane list "$@"
+        ;;
+      workspaces)
+        run_herdr workspace list "$@"
+        ;;
+      *)
+        echo "Unknown list subcommand: $SUBCMD" >&2
+        echo "Valid subcommands: machines, agents, panes, workspaces" >&2
+        exit 1
         ;;
     esac
-  done
+    ;;
 
-  if [ -z "$agent" ] || [ -z "$prompt_text" ]; then
-    echo "Usage: agent-spawn-remote prompt --agent <name> <prompt_text> [--wait]" >&2
-    exit 2
-  fi
+  status)
+    run_herdr status server "$@"
+    ;;
 
-  local payload
-  payload=$(jq -n \
-    --arg agent "$agent" \
-    --arg prompt "$prompt_text" \
-    --argjson wait "$wait" \
-    '{agent_name: $agent, prompt: $prompt, wait: $wait}')
+  spawn)
+    NAME=""
+    KIND="claude"
+    PROMPT=""
+    PANE=""
+    DIRECTION="right"
+    CWD=""
+    WAIT=false
 
-  send_request "POST" "/api/v1/agents/prompt" "$payload"
-}
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --name)
+          NAME="$2"
+          shift 2
+          ;;
+        --kind)
+          KIND="$2"
+          shift 2
+          ;;
+        --prompt)
+          PROMPT="$2"
+          shift 2
+          ;;
+        --pane)
+          PANE="$2"
+          shift 2
+          ;;
+        --direction)
+          DIRECTION="$2"
+          shift 2
+          ;;
+        --cwd|--workspace)
+          CWD="$2"
+          shift 2
+          ;;
+        --wait)
+          WAIT=true
+          shift
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
 
-cmd_keys() {
-  local pane_id="${1:-}"
-  shift || true
-  if [ -z "$pane_id" ] || [ $# -eq 0 ]; then
-    echo "Usage: agent-spawn-remote keys <pane_id> <key1> [key2...]" >&2
-    exit 2
-  fi
+    if [ -z "$PROMPT" ]; then
+      echo "Error: --prompt is required for spawn" >&2
+      exit 1
+    fi
 
-  local keys_json
-  keys_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
-  local payload
-  payload=$(jq -n --argjson keys "$keys_json" '{keys: $keys}')
+    if [ -z "$NAME" ]; then
+      NAME="agent-$(head -c 4 /dev/urandom | xxd -p 2>/dev/null || echo "$$")"
+    fi
 
-  send_request "POST" "/api/v1/panes/$pane_id/keys" "$payload"
-}
+    # 1. Split pane if not specified
+    if [ -z "$PANE" ]; then
+      SPLIT_CMD=(pane split --direction "$DIRECTION")
+      if [ -n "$CWD" ]; then
+        SPLIT_CMD+=(--cwd "$CWD")
+      fi
+      PANE_OUTPUT=$(run_herdr "${SPLIT_CMD[@]}")
+      # Extract pane_id if JSON returned
+      if echo "$PANE_OUTPUT" | grep -q '"pane_id"'; then
+        PANE=$(echo "$PANE_OUTPUT" | jq -r '.result.pane_id // empty' 2>/dev/null || true)
+      fi
+      if [ -z "$PANE" ]; then
+        PANE=$(echo "$PANE_OUTPUT" | tr -d '\r\n')
+      fi
+    fi
 
-cmd_close() {
-  local pane_id="${1:-}"
-  if [ -z "$pane_id" ]; then
-    echo "Usage: agent-spawn-remote close <pane_id>" >&2
-    exit 2
-  fi
+    # 2. Start agent
+    run_herdr agent start "$NAME" --kind "$KIND" --pane "$PANE"
 
-  send_request "POST" "/api/v1/panes/$pane_id/close" "{}"
-}
+    # 3. Prompt agent
+    PROMPT_CMD=(agent prompt "$NAME" "$PROMPT")
+    if [ "$WAIT" = true ]; then
+      PROMPT_CMD+=(--wait)
+    fi
+    run_herdr "${PROMPT_CMD[@]}"
+    ;;
 
-# --- CLI Dispatcher ---
-main() {
-  # Global options
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --nodes-file) NODES_FILE="$2"; shift 2 ;;
-      --node) NODE_ID="$2"; shift 2 ;;
-      --endpoint) HERDR_ENDPOINT="$2"; shift 2 ;;
-      --token) HERDR_TOKEN="$2"; shift 2 ;;
-      *) break ;;
-    esac
-  done
+  prompt)
+    TARGET="${1:-}"
+    shift || true
+    PROMPT_TEXT="${1:-}"
+    shift || true
+    if [ -z "$TARGET" ] || [ -z "$PROMPT_TEXT" ]; then
+      echo "Usage: agent-spawn-remote prompt <target> <prompt> [--wait]" >&2
+      exit 1
+    fi
+    run_herdr agent prompt "$TARGET" "$PROMPT_TEXT" "$@"
+    ;;
 
-  resolve_node
+  read)
+    TARGET="${1:-}"
+    shift || true
+    if [ -z "$TARGET" ]; then
+      echo "Usage: agent-spawn-remote read <target> [--lines N]" >&2
+      exit 1
+    fi
+    run_herdr agent read "$TARGET" "$@"
+    ;;
 
-  local subcommand="${1:-help}"
-  shift || true
+  keys)
+    TARGET="${1:-}"
+    shift || true
+    KEYS="${1:-}"
+    shift || true
+    if [ -z "$TARGET" ] || [ -z "$KEYS" ]; then
+      echo "Usage: agent-spawn-remote keys <target> <keystrokes>" >&2
+      exit 1
+    fi
+    run_herdr agent send-keys "$TARGET" "$KEYS" "$@"
+    ;;
 
-  case "$subcommand" in
-    health) cmd_health ;;
-    list) cmd_list "$@" ;;
-    read) cmd_read "$@" ;;
-    spawn) cmd_spawn "$@" ;;
-    prompt) cmd_prompt "$@" ;;
-    keys) cmd_keys "$@" ;;
-    close) cmd_close "$@" ;;
-    help|--help|-h)
-      echo "Herdr Agent Gateway Client CLI"
-      echo ""
-      echo "Commands:"
-      echo "  health                                Check gateway connectivity"
-      echo "  list [workspaces|panes|agents]        Inspect remote Herdr state"
-      echo "  read <pane_id> [--lines N]            Read terminal output"
-      echo "  spawn --kind <k> --name <n> [opts]    Create tab and start agent (--yolo for auto-approve)"
-      echo "  prompt --agent <n> <text> [--wait]    Inject instruction prompt"
-      echo "  keys <pane_id> <key...>               Send keys (ctrl+c, esc)"
-      echo "  close <pane_id>                       Close pane"
-      echo ""
-      echo "Global Options:"
-      echo "  --node <id>        Target node profile in herdr_nodes.json"
-      echo "  --nodes-file <path> Custom path to herdr_nodes.json"
-      echo "  --endpoint <url>   Direct gateway URL override"
-      echo "  --token <token>    Direct Bearer token override"
-      ;;
-    *)
-      echo "Unknown command: $subcommand. Run with --help for usage." >&2
-      exit 2
-      ;;
-  esac
-}
+  close)
+    TARGET="${1:-}"
+    shift || true
+    if [ -z "$TARGET" ]; then
+      echo "Usage: agent-spawn-remote close <target>" >&2
+      exit 1
+    fi
+    run_herdr pane close "$TARGET" "$@"
+    ;;
 
-main "$@"
+  *)
+    echo "Unknown command: $CMD" >&2
+    usage
+    ;;
+esac
