@@ -170,34 +170,15 @@ Add `herdr-agent-gateway` to your flake inputs and import the module:
     enable = true;
     client.enable = true;          # Installs agent-spawn-remote CLI
     overviewPlugin.enable = true;  # Links agents-overview plugin into ~/.config/herdr/plugins/
-
-    # Declaratively configure connected SSH machines (~/.local/state/herdr/client/endpoints.json):
-    machines = [
-      {
-        label = "pikujs-server-1";
-        target = "pikujs@pikujs-server-1.local";
-        session = "default";
-      }
-      {
-        label = "pikujs-predator";
-        target = "pikujs@pikujs-predator.local";
-        session = "default";
-      }
-    ];
-
-    # Optional: configure allowed SSH public keys
-    ssh.authorizedKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... operator-key"
-    ];
   };
 }
 ```
 
-### 2. Automatic Cluster Mesh in NixOS
-If your NixOS repository maintains a cluster host/IP registry, you can auto-populate the peer machines dynamically in `modules/home/herdr.nix`:
+### 2. Machine Endpoints in Herdr Dotfiles
+Herdr manages saved remote machines via `~/.local/state/herdr/client/endpoints.json`. In your NixOS/Home Manager herdr module (`modules/home/herdr.nix`), you can declaratively provision these endpoints:
 
 ```nix
-{ pkgs, herdr, herdr-agent-gateway, host, registry, ... }:
+{ pkgs, herdr, herdr-agent-gateway, host, ... }:
 
 let
   clusterNodes = [
@@ -213,13 +194,21 @@ in
 
   home.packages = [ herdr.packages.${pkgs.system}.default ];
 
+  # Configure gateway overview plugin & CLI
   services.herdr-agent-gateway = {
     enable = true;
     client.enable = true;
-    machines = map (m: {
+  };
+
+  # Declaratively configure Herdr remote endpoints
+  xdg.stateFile."herdr/client/endpoints.json".text = builtins.toJSON {
+    version = 1;
+    ssh = map (m: {
+      id = builtins.hashString "md5" "${m.target}-default";
       label = m.label;
       target = m.target;
       session = "default";
+      enabled = true;
     }) remoteMachines;
   };
 }
