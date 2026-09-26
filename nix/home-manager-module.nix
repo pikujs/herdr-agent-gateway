@@ -10,7 +10,7 @@ let
 in
 {
   options.services.herdr-agent-gateway = {
-    enable = mkEnableOption "Herdr multi-machine agent overview plugin and CLI integration";
+    enable = mkEnableOption "Herdr multi-machine agent overview plugin and declarative machine configuration";
 
     overviewPlugin = {
       enable = mkOption {
@@ -42,6 +42,47 @@ in
       type = types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.herdr-agents-overview;
       description = "Package providing the Herdr Agents Overview plugin.";
+    };
+
+    # Declarative multi-machine endpoints definition for Herdr (~/.local/state/herdr/client/endpoints.json)
+    machines = mkOption {
+      type = types.listOf (types.submodule {
+        options = {
+          id = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Opaque machine identifier. If omitted, computed deterministically from target.";
+          };
+          label = mkOption {
+            type = types.str;
+            description = "Friendly display label for the machine (e.g. server1, pikujs-predator).";
+          };
+          target = mkOption {
+            type = types.str;
+            description = "SSH connection target (e.g. pikujs@server1.local or pikujs@192.168.88.4).";
+          };
+          session = mkOption {
+            type = types.str;
+            default = "default";
+            description = "Remote Herdr session name.";
+          };
+          enabled = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Whether the machine profile is enabled.";
+          };
+        };
+      });
+      default = [];
+      description = "Declarative list of saved SSH machines provisioned into ~/.local/state/herdr/client/endpoints.json.";
+    };
+
+    ssh = {
+      authorizedKeys = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "List of SSH public keys authorized to connect to Herdr on this machine.";
+      };
     };
 
     # Backwards-compatibility options (retained as no-ops so existing NixOS modules evaluate cleanly)
@@ -144,6 +185,25 @@ in
 
     xdg.configFile = mkIf (cfg.overviewPlugin.enable) {
       "herdr/plugins/agents-overview".source = "${cfg.overviewPlugin.package}/share/herdr/plugins/agents-overview";
+    };
+
+    # Declarative provision of saved SSH machines
+    xdg.stateFile = mkIf (cfg.machines != []) {
+      "herdr/client/endpoints.json".text = builtins.toJSON {
+        version = 1;
+        ssh = map (m: {
+          id = if m.id != null then m.id else builtins.hashString "md5" "${m.target}-${m.session}";
+          label = m.label;
+          target = m.target;
+          session = m.session;
+          enabled = m.enabled;
+        }) cfg.machines;
+      };
+    };
+
+    # Optional declarative authorized_keys in Home Manager
+    home.file = mkIf (cfg.ssh.authorizedKeys != []) {
+      ".ssh/authorized_keys".text = lib.concatStringsSep "\n" cfg.ssh.authorizedKeys + "\n";
     };
   };
 }

@@ -2,387 +2,270 @@
 
 # Herdr Agent Gateway
 
-**Secure, authenticated remote dispatch plugin, skill, and MCP server for the [Herdr](https://herdr.dev) terminal multiplexer.**
+**Multi-machine agent overview, dispatch skill, and Hermes plugin for the [Herdr](https://herdr.dev) terminal multiplexer.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Herdr](https://img.shields.io/badge/Herdr-v0.8+-3b82f6.svg)](https://herdr.dev)
+[![Herdr](https://img.shields.io/badge/Herdr-v0.9+-3b82f6.svg)](https://herdr.dev)
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3.svg?logo=nixos&logoColor=white)](flake.nix)
-[![Bun](https://img.shields.io/badge/Bun-1.3+-fbf0df.svg?logo=bun&logoColor=black)](https://bun.sh)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 
 <p align="center">
-  <a href="#-features">Features</a> •
+  <a href="#-overview">Overview</a> •
   <a href="#-architecture">Architecture</a> •
-  <a href="#-quickstart--installation">Installation</a> •
-  <a href="#-usage-reference">Usage</a> •
-  <a href="#-declarative-configuration">Configuration</a> •
-  <a href="#-security-model">Security</a> •
-  <a href="#-license">License</a>
+  <a href="#-herdr-in-app-overview-plugin">Herdr Plugin</a> •
+  <a href="#-hermes-agent-plugin">Hermes Plugin</a> •
+  <a href="#-posix-cli--agent-skill">Agent Skill</a> •
+  <a href="#-declarative-nixos--home-manager-configuration">Nix Configuration</a>
 </p>
 
 </div>
 
 ---
 
-## 🌟 Overview & Why It Exists
+## 🌟 Overview
 
-When AI coding agents (Claude Code, OpenCode, Codex, Pi, DSH, Antigravity) run on remote servers, in sandboxes, or across background automation loops, they frequently need to dispatch tasks to a developer's local workstation (e.g. running builds, inspecting hardware, running GUI tests, or spawning subagents).
+When working with AI coding agents (Claude Code, OpenCode, Codex, Pi, DSH, Hermes, Antigravity) across multiple machines—local workstations, GPU compute boxes, and CI/dev servers—keeping track of which agent is running where, what project directory it occupies, and its current execution state is challenging.
 
-However, granting remote agents raw SSH access or unconstrained root shells creates massive security risks and clobbers the developer's interactive workspace.
+**Herdr Agent Gateway** unifies your multi-machine agent workflow around **[Herdr](https://herdr.dev)**:
 
-**Herdr Agent Gateway** solves this by exposing a scoped, authenticated control layer for **Herdr**:
-1. **Zero Focus Theft**: Spawns tasks inside dedicated terminal tabs in the background without stealing your active typing focus.
-2. **Hardened Dual Auth**: Rejects unauthorized access using constant-time Bearer tokens and cryptographic SSH Ed25519 request signatures.
-3. **PTY Memory Injection**: Prompts are passed verbatim into the terminal PTY layer without shell expansion or interpolation vulnerabilities.
-4. **Autonomous YOLO Mode**: Configures non-interactive flags per agent kind declaratively in `herdr_nodes.json`.
-
----
-
-## ✨ Features
-
-- 🛡️ **Zero Focus Theft**: Agents launch in background tabs (`focus: false`) inside a dedicated workspace (`spawned-agents`), leaving your active editor session undisturbed.
-- ⚡ **Dual Client Interfaces**:
-  - **POSIX CLI & Agent Skill**: [`skills/spawn_herdr_agent/`](skills/spawn_herdr_agent/) contains `agent-spawn-remote`, a zero-dependency script for any agent harness.
-  - **Model Context Protocol (MCP)**: Native [`packages/mcp-server/`](packages/mcp-server/) exposes gateway tools directly to tool-calling agents.
-- 🔐 **Hardened Dual Authentication**:
-  - Constant-time string comparison (`crypto.timingSafeEqual`) eliminates timing attacks.
-  - SSH Request Signatures verify client identity against `~/.ssh/authorized_keys` with SHA-256 body hashing and a 60-second replay window.
-- 🚀 **Declarative YOLO Mode**: Run agents autonomously without confirmation prompts using `--yolo` or `--approval-mode yolo`. Arguments like `--dangerously-skip-permissions` are mapped per agent in `herdr_nodes.json`.
-- ❄️ **First-Class Nix & Home Manager Integration**: Full flake support packaging all binaries, runnable apps, devShell, and a declarative Home Manager module with systemd service supervision.
-- 🧭 **Multi-Machine Profile Registry**: Automatic machine discovery with fallback order across local workstation, LAN desktops, or remote devboxes.
+1. **Native OpenSSH Multiplexing**: Built directly upon Herdr's native SSH coordination engine (`herdr --machine <target>`). No custom HTTP daemons, no custom listening ports, and no extra tokens to manage.
+2. **Cluster-Wide Agent Overview**: Displays all active agents across local and saved SSH machines in an interactive Herdr overlay pane or terminal table with agent type, lifecycle status, workspace label, terminal title, and working directory (`cwd`).
+3. **Hermes Agent Integration**: Declarative plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) offering structured tools and slash commands (`/herdr`) to list machines, query cluster agents, and spawn background tasks.
+4. **Declarative NixOS & Home Manager Provisioning**: Declaratively define connected SSH machines (`~/.local/state/herdr/client/endpoints.json`), authorized SSH keys, and tool wrappers across all your machines.
 
 ---
 
-## 🏗️ Architecture & Data Flow
+## 🏗️ Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Remote["Remote / External Agent"]
-        CLI["POSIX Skill Client<br/>(agent-spawn-remote)"]
-        MCP["MCP Client Agent<br/>(Claude / OpenCode / Codex)"]
+flowchart TD
+    subgraph Clients["Agent Clients & Interfaces"]
+        OverviewCLI["Cluster Overview CLI<br/>(agents-overview.py)"]
+        HermesPlugin["Hermes Plugin<br/>(hermes_herdr)"]
+        POSIXScript["POSIX CLI & Skill<br/>(agent-spawn-remote)"]
     end
 
-    subgraph GatewayDaemon["Developer Workstation (Port :9480)"]
-        HTTP["HTTP Listener<br/>(127.0.0.1 / LAN / VPN)"]
-        Auth{"Dual Auth Engine<br/>• Timing-Safe Bearer<br/>• SSH Ed25519 Signatures"}
-        Router["Request Router & Queue"]
+    subgraph LocalHerdr["Local Machine (Herdr Multiplexer)"]
+        LocalDaemon["Herdr Daemon API<br/>(~/.config/herdr/herdr.sock)"]
+        LocalState["Machine Catalog<br/>(~/.local/state/herdr/client/endpoints.json)"]
+        LocalPanes["Local Panes & Agents<br/>(pi, claude, codex)"]
     end
 
-    subgraph Multiplexer["Herdr Multiplexer Core"]
-        Socket["Unix Domain Socket<br/>(~/.config/herdr/herdr.sock)"]
-        Workspace["Workspace: 'spawned-agents'"]
-        Tab1["Tab: worker-01<br/>(Agent: Pi / Claude)"]
-        Tab2["Tab: test-runner<br/>(Agent: OpenCode)"]
+    subgraph RemoteMachines["Remote SSH Machines (Herdr)"]
+        Server1["pikujs-server-1<br/>(herdr --machine pikujs-server-1)"]
+        Predator["pikujs-predator<br/>(herdr --machine pikujs-predator)"]
     end
 
-    CLI -->|"HTTP + Auth Header"| HTTP
-    MCP -->|"MCP stdio / JSON-RPC"| HTTP
-    HTTP --> Auth
-    Auth -->|"Validated"| Router
-    Router -->|"JSON-RPC IPC"| Socket
-    Socket --> Workspace
-    Workspace --> Tab1
-    Workspace --> Tab2
+    Clients -->|"herdr agent list<br/>herdr pane split"| LocalDaemon
+    LocalDaemon --> LocalPanes
+    LocalDaemon -->|"Multiplexed OpenSSH<br/>(ControlPersist 600)"| Server1
+    LocalDaemon -->|"Multiplexed OpenSSH<br/>(ControlPersist 600)"| Predator
+    LocalState -.->|"Discovered Targets"| Clients
 ```
 
 ---
 
-## 📦 Quickstart & Installation
+## 🖥️ Herdr In-App Overview Plugin
 
-### Option 1: Nix Flake & Home Manager (Recommended)
+The gateway includes a lightweight Herdr plugin (`herdr-plugin.toml` & `plugins/herdr-agents-overview/`) that adds cluster-wide agent visibility directly into your Herdr session:
 
-Add `herdr-agent-gateway` to your flake inputs:
+- **Overlay Pane (`placement = "overlay"`)**: Opens a floating, interactive terminal panel showing all running agents across all machines.
+- **Actions (`[[actions]]`)**: Provides `overview.list` (formatted table) and `overview.json` (machine-parseable JSON) actions.
 
-```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    herdr-agent-gateway.url = "git+https://gitlab.pikujs.com/pikujs/herdr-agent-gateway.git";
-  };
-}
-```
-
-Enable the service and tools in your Home Manager configuration:
-
-```nix
-{ inputs, pkgs, ... }:
-
-{
-  imports = [
-    inputs.herdr-agent-gateway.homeManagerModules.default
-  ];
-
-  services.herdr-agent-gateway = {
-    enable = true;           # Enables background systemd user service
-    client.enable = true;    # Installs agent-spawn-remote in PATH
-    mcpServer.enable = true; # Installs herdr-mcp-server in PATH
-    host = "127.0.0.1";
-    port = 9480;
-    defaultWorkspace = "spawned-agents";
-
-    # Declarative YOLO args per agent
-    yoloArgs = {
-      pi = [ "--yolo" ];
-      claude = [ "--dangerously-skip-permissions" ];
-      opencode = [ "--yolo" ];
-    };
-  };
-}
-```
-
-### Option 2: Herdr Plugin System (Marketplace or Local Link)
-
-Install directly from the Herdr Marketplace:
-
+### Running the Overview Directly:
 ```bash
-# Install from the Herdr plugin index
-herdr plugin install pikujs/herdr-agent-gateway
+# Print formatted cluster table
+herdr-agents-overview
+
+# Show detailed view (including task topic, description, and pane ID)
+herdr-agents-overview --detailed
+
+# Output JSON for programmatic tooling
+herdr-agents-overview --format json
 ```
 
-Or link a local checkout into your multiplexer:
-
-```bash
-# Link local checkout as a Herdr plugin
-herdr plugin link plugins/herdr-remote-gateway
-
-# Invoke initial setup action (generates tokens and installs systemd user service)
-herdr plugin action invoke setup --plugin herdr-remote-gateway
+### Example Terminal Output:
 ```
+══ Herdr Multi-Machine Agent Network Overview ══
 
-### Option 3: Hermes Plugin System
+MACHINE        AGENT TYPE   STATUS     WORKSPACE        TITLE                    DIRECTORY (CWD)
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+ local         pi           idle       cordis (wM)      cordis-teach - cordis    /home/pikujs/Projects/ext/ai/agents/dsh/cordis
+   └─ topic: cordis | pane: wM:p4
+ local         pi           idle       cordis (wM)      dps-task01 - dsh-permis  /home/pikujs/Projects/ai/agents/dsh-plugins/dsh-permission-system
+   └─ topic: dps | pane: wM:pA
+*local         pi           idle       argus-core (wX)  argus-core               /home/pikujs/Projects/argus/argus-core
+   └─ topic: argus | pane: wX:p1
+ local         pi           idle       nixos-server-co  nixos-server-config      /home/pikujs/Projects/nixos-server-config
+   └─ topic: nixos | pane: w0:pV
+ pikujs-pred   claude       running    evals (w1)       model-benchmarks         /srv/evals/benchmarks
 
-Install directly from GitHub into [Hermes Agent](https://github.com/NousResearch/hermes-agent):
-
-```bash
-# Install from GitHub
-hermes plugins install pikujs/herdr-agent-gateway --enable
-
-# Or install in Hermes Desktop via one-click link:
-# hermes://plugin/install?repo=pikujs/herdr-agent-gateway&enable=1
-```
-
-Or configure declaratively in NixOS on your Hermes server:
-
-```nix
-services.hermes-agent = {
-  extraPlugins = [
-    inputs.herdr-agent-gateway
-  ];
-  settings.plugins.enabled = [ "herdr-agent-gateway" ];
-};
-```
-
-### Option 4: Standalone Run via Bun
-
-```bash
-# Run server directly with Bun
-cd plugins/herdr-remote-gateway
-bun install
-bun run src/server.ts
-
-# Or run setup helper to install systemd user service
-bun run src/cli.ts setup
+Total agents in network: 5
 ```
 
 ---
 
-## 🛠️ Usage Reference
+## 🤖 Hermes Agent Plugin
 
-### 1. POSIX CLI Client (`agent-spawn-remote`)
+The repository acts as a native plugin for **Hermes Agent** (`plugin.yaml`, `__init__.py`, `hermes_herdr/`).
 
-The client wrapper is located at [`skills/spawn_herdr_agent/scripts/agent-spawn-remote`](skills/spawn_herdr_agent/scripts/agent-spawn-remote) (with a convenient symlink at `scripts/agent-spawn-remote`).
+### Provided Tools
+
+| Tool Name | Description |
+| :--- | :--- |
+| `herdr_list_machines` | Lists all configured local and remote SSH machines. |
+| `herdr_list_agents` | Lists active agents across the cluster with enriched metadata (`title`, `agent_type`, `cwd`, `workspace_label`, `status`). |
+| `herdr_spawn_agent` | Splits a pane on the target machine in a specific directory, launches an agent (`claude`, `codex`, `pi`, `hermes`, etc.), and injects an execution prompt. |
+| `herdr_prompt_agent` | Sends follow-up instructions to an active agent in Herdr (with optional `--wait`). |
+| `herdr_read_agent` | Reads recent terminal output from an active agent session. |
+| `herdr_node_status` | Checks server health and version on a local or remote Herdr host. |
+
+### Slash Commands
+- `/herdr machines`: List connected local and remote SSH machines.
+- `/herdr agents [machine]`: List active agents formatted with machine, type, title, and directory.
+- `/herdr status [machine]`: Inspect server status.
+- `/herdr spawn <prompt>`: Quick agent spawn in Herdr.
+
+---
+
+## 📜 POSIX CLI & Agent Skill
+
+The POSIX wrapper `scripts/agent-spawn-remote` (and companion skill [`skills/spawn_herdr_agent/`](skills/spawn_herdr_agent/)) provides a zero-dependency CLI interface for shell-based agent harnesses:
 
 ```bash
-# Check connectivity & socket status
-agent-spawn-remote health
-
-# List active workspaces, panes, or agents
-agent-spawn-remote list workspaces
+# List active machines and cluster agents
+agent-spawn-remote list machines
 agent-spawn-remote list agents
 
-# Spawn an agent tab in Herdr with an initial prompt
+# Spawn an agent on a remote machine in a specific project directory
 agent-spawn-remote spawn \
-  --kind pi \
-  --name worker_refactor \
-  --workspace spawned-agents \
-  --prompt "Analyze project structure and run unit tests"
-
-# Spawn in autonomous YOLO mode (auto-approves tool execution)
-agent-spawn-remote spawn \
+  --machine pikujs-server-1 \
+  --cwd /srv/projects/auth-service \
   --kind claude \
-  --name autotask \
-  --workspace spawned-agents \
-  --yolo \
-  --prompt "Fix failing linter errors"
+  --name auth-refactor \
+  --prompt "Refactor database connection pool handling" \
+  --wait
 
-# Read terminal output from a pane
-agent-spawn-remote read w15:p1 --lines 50
+# Read output from an agent
+agent-spawn-remote read auth-refactor --lines 50
 
-# Submit follow-up prompt to an active agent
-agent-spawn-remote prompt --agent worker_refactor "Run pytest tests/test_api.py" --wait
-
-# Close a finished pane
-agent-spawn-remote close w15:p1
-```
-
-### 2. Model Context Protocol (MCP Server)
-
-Configure the MCP server in your agent harness (`claude_desktop_config.json`, OpenCode `opencode.json`, or Codex):
-
-```json
-{
-  "mcpServers": {
-    "herdr-gateway": {
-      "command": "herdr-mcp-server",
-      "env": {
-        "HERDR_GATEWAY_TOKEN": "your_bearer_token"
-      }
-    }
-  }
-}
-```
-
-#### Exposed MCP Tools:
-* `herdr_health`: Verify gateway connectivity and Herdr multiplexer status.
-* `herdr_list_panes`: List all workspaces, tabs, panes, and running agent sessions.
-* `herdr_spawn_agent`: Create a tab, start an agent runtime, and inject initial prompt.
-* `herdr_prompt_agent`: Send follow-up instructions to an active named agent.
-* `herdr_read_pane`: Read terminal scrollback history from a specific pane.
-* `herdr_send_keys`: Send control sequences (`ctrl+c`, `enter`, `escape`) to an agent.
-* `herdr_close_pane`: Terminate and close a terminal pane.
-
-### 3. Hermes Plugin (Tools & Slash Commands)
-
-When installed in [Hermes Agent](https://github.com/NousResearch/hermes-agent), the plugin registers native tools, a bundled skill, and slash commands:
-
-#### Registered Tools:
-* **`herdr_spawn_agent`**: Spawns an agent in a background Herdr pane locally or on any configured remote machine (`node`, `prompt`, `workspace`, `kind`, `pane_direction`, `focus`).
-* **`herdr_list_nodes`**: Reads configured nodes from `~/.config/herdr_nodes.json` and reports connectivity with `"check_health": true`.
-* **`herdr_node_status`**: Queries version, uptime, and active pane count for a target node.
-
-#### Bundled Skill:
-* Resolvable as `herdr:spawn_herdr_agent` via `skill_view()`.
-
-#### Slash Commands:
-```bash
-/herdr list              # List configured Herdr nodes and online state
-/herdr status [node]     # Show gateway version and active pane capacity
-/herdr spawn <prompt>    # Quick agent spawn on default node
-```
-
-### 4. REST API (`curl`)
-
-```bash
-# Health check (unauthenticated)
-curl -s http://127.0.0.1:9480/api/v1/health
-
-# Spawn agent tab (Bearer token)
-curl -s -X POST http://127.0.0.1:9480/api/v1/agents/spawn \
-  -H "Authorization: Bearer $(cat ~/.config/herdr/plugins/config/herdr-remote-gateway/gateway.token)" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_kind": "pi",
-    "agent_name": "worker_api",
-    "workspace": "spawned-agents",
-    "yolo": true,
-    "prompt": "echo Hello from Remote Agent"
-  }'
+# Close an agent pane
+agent-spawn-remote close auth-refactor
 ```
 
 ---
 
-## ⚙️ Declarative Configuration
+## ❄️ Declarative NixOS & Home Manager Configuration
 
-### Node Registry (`herdr_nodes.json`)
+The gateway provides a declarative Home Manager module (`nix/home-manager-module.nix`) and Nix package derivations.
 
-The client script and MCP server automatically discover machine profiles in `~/.config/herdr/plugins/config/herdr-remote-gateway/herdr_nodes.json`:
+### 1. Home Manager Configuration
+Add `herdr-agent-gateway` to your flake inputs and import the module:
 
-```json
+```nix
 {
-  "$schema": "https://raw.githubusercontent.com/pikujs/herdr-agent-gateway/main/schemas/herdr_nodes.schema.json",
-  "default_node": "local-workstation",
-  "fallback_order": [
-    "local-workstation",
-    "lan-desktop"
-  ],
-  "yolo_args": {
-    "pi": ["--yolo"],
-    "claude": ["--dangerously-skip-permissions"],
-    "opencode": ["--yolo"],
-    "codex": ["--yolo"],
-    "dsh": ["--yolo"],
-    "antigravity": ["--yolo"]
-  },
-  "nodes": {
-    "local-workstation": {
-      "endpoint": "http://127.0.0.1:9480",
-      "auth_token": "env:HERDR_GATEWAY_TOKEN",
-      "default_workspace": "spawned-agents",
-      "default_agent": "pi",
-      "priority": 10
-    },
-    "lan-desktop": {
-      "endpoint": "http://192.168.1.150:9480",
-      "auth_token": "env:HERDR_REMOTE_TOKEN",
-      "default_workspace": "spawned-agents",
-      "default_agent": "claude",
-      "priority": 20
-    }
-  }
+  imports = [ herdr-agent-gateway.homeManagerModules.default ];
+
+  services.herdr-agent-gateway = {
+    enable = true;
+    client.enable = true;          # Installs agent-spawn-remote CLI
+    overviewPlugin.enable = true;  # Links agents-overview plugin into ~/.config/herdr/plugins/
+
+    # Declaratively configure connected SSH machines (~/.local/state/herdr/client/endpoints.json):
+    machines = [
+      {
+        label = "pikujs-server-1";
+        target = "pikujs@pikujs-server-1.local";
+        session = "default";
+      }
+      {
+        label = "pikujs-predator";
+        target = "pikujs@pikujs-predator.local";
+        session = "default";
+      }
+    ];
+
+    # Optional: configure allowed SSH public keys
+    ssh.authorizedKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... operator-key"
+    ];
+  };
 }
 ```
 
-### Environment Variables
+### 2. Automatic Cluster Mesh in NixOS
+If your NixOS repository maintains a cluster host/IP registry, you can auto-populate the peer machines dynamically in `modules/home/herdr.nix`:
 
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `HERDR_GATEWAY_HOST` | String | `127.0.0.1` | Bind address. Default localhost; can bind to LAN/VPN IP or `0.0.0.0` when set. |
-| `HERDR_GATEWAY_PORT` | Integer | `9480` | Port for the HTTP daemon. |
-| `HERDR_GATEWAY_TOKEN` | String | *(None)* | Shared Bearer authentication secret. |
-| `HERDR_GATEWAY_TOKEN_FILE` | String | `.../gateway.token` | Path to Bearer token file if not set via environment. |
-| `HERDR_GATEWAY_DEFAULT_WORKSPACE` | String | `spawned-agents` | Workspace targeted when caller omits `workspace`. |
-| `HERDR_GATEWAY_MAX_PANES` | Integer | `16` | Maximum concurrent active panes (returns `429` if exceeded). |
-| `HERDR_SOCKET_PATH` | String | `~/.config/herdr/herdr.sock` | Path to Herdr Unix domain socket. |
-| `HERDR_BIN_PATH` | String | `herdr` | Executable path for CLI fallback. |
+```nix
+{ pkgs, herdr, herdr-agent-gateway, host, registry, ... }:
+
+let
+  clusterNodes = [
+    { name = "server1"; label = "pikujs-server-1"; target = "pikujs@pikujs-server-1.local"; }
+    { name = "pikujs-mini"; label = "pikujs-mini"; target = "pikujs@pikujs-mini.local"; }
+    { name = "pikujs-predator"; label = "pikujs-predator"; target = "pikujs@pikujs-predator.local"; }
+  ];
+  # Exclude current machine
+  remoteMachines = builtins.filter (n: n.name != host) clusterNodes;
+in
+{
+  imports = [ herdr-agent-gateway.homeManagerModules.default ];
+
+  home.packages = [ herdr.packages.${pkgs.system}.default ];
+
+  services.herdr-agent-gateway = {
+    enable = true;
+    client.enable = true;
+    machines = map (m: {
+      label = m.label;
+      target = m.target;
+      session = "default";
+    }) remoteMachines;
+  };
+}
+```
+
+### 3. Declarative Hermes Plugin in NixOS
+In your NixOS Hermes module (e.g. `server1/hermes.nix`):
+
+```nix
+{ pkgs, hermes-agent, herdr-agent-gateway, herdr, ... }:
+{
+  services.hermes-agent = {
+    enable = true;
+
+    # Declarative plugin installation:
+    extraPlugins = [
+      herdr-agent-gateway.packages.${pkgs.stdenv.hostPlatform.system}.hermes-plugin
+    ];
+
+    settings.plugins.enabled = [ "herdr-agent-gateway" ];
+
+    # Mount herdr CLI into container:
+    container.backend = "podman";
+  };
+
+  # Automatically bind-mount herdr binary into container at /usr/local/bin/herdr:
+  hermesContainerTools = [
+    {
+      binary = "herdr";
+      package = herdr.packages.${pkgs.stdenv.hostPlatform.system}.default;
+    }
+  ];
+}
+```
 
 ---
 
 ## 🔒 Security Model
 
-1. **Restricted Interface Binding**: Defaults strictly to `127.0.0.1`. Never exposes public interfaces unless explicitly requested via `HERDR_GATEWAY_HOST`.
-2. **Constant-Time Authentication**: Token validation uses `crypto.timingSafeEqual()` to protect against timing attacks.
-3. **Cryptographic Request Signatures**: SSH signatures require SHA-256 payload digest verification with timestamp freshness validation (max 60 seconds clock drift) against `~/.ssh/authorized_keys`.
-4. **PTY Memory Isolation**: Prompts bypass shell expansion and pass directly into Herdr PTY layers as memory strings, preventing shell-injection vulnerabilities.
-5. **Input Sanitization**: Enforces strict agent kind whitelisting (`pi`, `claude`, `opencode`, `codex`, `dsh`, `antigravity`), alphanumeric session naming (`^[a-zA-Z0-9_-]{1,64}$`), and a 64KB maximum payload ceiling.
-
----
-
-## 📁 Repository Structure
-
-```
-herdr-agent-gateway/
-├── flake.nix                       # Flake packaging (packages, apps, devShells, HM module)
-├── flake.lock                      # Pinned Nix lockfile
-├── nix/                            # Nix expressions
-│   ├── packages.nix                # Derivations for daemon, client, and MCP server
-│   └── home-manager-module.nix     # Home Manager service & configuration module
-├── templates/                      # Dedicated external templates for service & configs
-├── plugins/
-│   └── herdr-remote-gateway/       # In-daemon Herdr plugin & HTTP server (Bun / TypeScript)
-├── packages/
-│   └── mcp-server/                 # Model Context Protocol (MCP) server
-├── skills/
-│   └── spawn_herdr_agent/          # Agent Skill specification (SKILL.md)
-│       └── scripts/                # Canonical client scripts (agent-spawn-remote)
-├── scripts/                        # Root convenience symlinks
-├── schemas/
-│   └── herdr_nodes.schema.json     # Machine profile registry JSON Schema
-├── docs/                           # Detailed architecture and API specifications
-└── AGENTS.md                       # Machine rules & development instructions
-```
+- **No Public Network Listeners**: Herdr Agent Gateway does not open or listen on any HTTP or TCP ports.
+- **OpenSSH Transport**: All remote machine operations travel over standard OpenSSH using your existing `~/.ssh/config` and cryptographic keys.
+- **PTY Injection Safety**: Prompts and commands bypass shell evaluation (`bash -c`) and are written directly to PTY streams with bracketed paste.
+- **Scoped Execution**: Pane splits and agent launches run under the target host's unprivileged user with standard filesystem permissions.
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE) © 2026 pikujs (Nirmaan J Sarkar).
+MIT © [pikujs](https://github.com/pikujs)
