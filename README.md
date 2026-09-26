@@ -210,6 +210,17 @@ container.extraVolumes = [
 ];
 ```
 
+### 4. Optional Herdr Keybinding (`~/.config/herdr/config.toml`)
+To open the multi-machine agent overview in a temporary Herdr pane with a single keybinding, add to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+alt+o"
+type = "pane"
+command = "herdr-agent-gateway overview -d"
+description = "fleet agent overview"
+```
+
 ---
 
 ## 📄 License
