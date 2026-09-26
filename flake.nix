@@ -1,5 +1,5 @@
 {
-  description = "Herdr Agent Gateway — Multi-machine agent overview, dispatch skill, and Hermes plugin for Herdr";
+  description = "Herdr Agent Gateway — Multi-machine fleet CLI and universal agent skill for Herdr";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,16 +17,16 @@
 
         apps = {
           default = flake-utils.lib.mkApp {
-            drv = herdrPackages.herdr-agents-overview;
-            name = "herdr-agents-overview";
+            drv = herdrPackages.herdr-agent-gateway;
+            name = "herdr-agent-gateway";
           };
           overview = flake-utils.lib.mkApp {
-            drv = herdrPackages.herdr-agents-overview;
-            name = "herdr-agents-overview";
+            drv = herdrPackages.herdr-agent-gateway;
+            name = "herdr-agent-gateway";
           };
           client = flake-utils.lib.mkApp {
-            drv = herdrPackages.agent-spawn-remote;
-            name = "agent-spawn-remote";
+            drv = herdrPackages.herdr-agent-gateway;
+            name = "herdr-agent-gateway";
           };
         };
 
@@ -43,9 +43,6 @@
       # Overlays
       overlays.default = final: prev: {
         herdr-agent-gateway = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).default;
-        herdr-agents-overview = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).herdr-agents-overview;
-        herdr-agent-spawn-remote = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).agent-spawn-remote;
-        herdr-hermes-plugin = (import ./nix/packages.nix { pkgs = final; lib = final.lib; }).hermes-plugin;
       };
 
       # Home Manager Modules

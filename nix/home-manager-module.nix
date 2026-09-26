@@ -10,46 +10,54 @@ let
 in
 {
   options.services.herdr-agent-gateway = {
-    enable = mkEnableOption "Herdr multi-machine agent overview plugin and declarative machine configuration";
+    enable = mkEnableOption "Herdr Agent Gateway unified CLI and universal agent skill";
+
+    package = mkOption {
+      type = types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.herdr-agent-gateway;
+      description = "Package providing the herdr-agent-gateway executable and skill assets.";
+    };
+
+    skill = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether to provision the universal agent skill into ~/.agents/skills/herdr-agent-gateway.";
+      };
+    };
+
+    # Backwards-compatibility options (retained as no-ops so existing NixOS modules evaluate cleanly)
+    client = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Deprecated / no-op. CLI is included in default package.";
+      };
+      package = mkOption {
+        type = types.nullOr types.package;
+        default = null;
+        description = "Deprecated / no-op.";
+      };
+    };
 
     overviewPlugin = {
       enable = mkOption {
         type = types.bool;
         default = true;
-        description = "Whether to link the herdr-agents-overview plugin into ~/.config/herdr/plugins/agents-overview.";
+        description = "Deprecated / no-op. Overview is built into the herdr-agent-gateway CLI.";
       };
       package = mkOption {
-        type = types.package;
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.herdr-agents-overview;
-        description = "Package providing the Herdr Agents Overview CLI and plugin assets.";
+        type = types.nullOr types.package;
+        default = null;
+        description = "Deprecated / no-op.";
       };
     };
 
-    client = {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Whether to install the agent-spawn-remote CLI client into home.packages.";
-      };
-      package = mkOption {
-        type = types.package;
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.agent-spawn-remote;
-        description = "Package to use for agent-spawn-remote CLI.";
-      };
-    };
-
-    package = mkOption {
-      type = types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.herdr-agents-overview;
-      description = "Package providing the Herdr Agents Overview plugin.";
-    };
-
-    # Backwards-compatibility options (retained as no-ops so existing NixOS modules evaluate cleanly)
     mcpServer = {
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Deprecated / no-op. Herdr multi-machine coordination uses native SSH forwarding.";
+        description = "Deprecated / no-op.";
       };
       package = mkOption {
         type = types.nullOr types.package;
@@ -103,7 +111,7 @@ in
     nodes = mkOption {
       type = types.attrsOf types.attrs;
       default = {};
-      description = "Deprecated / no-op. Node discovery is handled by Herdr's native SSH machine catalog.";
+      description = "Deprecated / no-op.";
     };
 
     machines = mkOption {
@@ -150,12 +158,11 @@ in
   };
 
   config = mkIf cfg.enable {
-    home.packages =
-      optional (cfg.overviewPlugin.enable) cfg.overviewPlugin.package
-      ++ optional (cfg.client.enable) cfg.client.package;
+    home.packages = [ cfg.package ];
 
-    xdg.configFile = mkIf (cfg.overviewPlugin.enable) {
-      "herdr/plugins/agents-overview".source = "${cfg.overviewPlugin.package}/share/herdr/plugins/agents-overview";
+    # Link universal skill to ~/.agents/skills/herdr-agent-gateway
+    home.file = mkIf cfg.skill.enable {
+      ".agents/skills/herdr-agent-gateway".source = "${cfg.package}/share/agents/skills/herdr-agent-gateway";
     };
   };
 }

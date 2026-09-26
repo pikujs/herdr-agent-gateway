@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Herdr Agent Gateway CLI.
+
+A unified command-line tool for discovering, inspecting, and orchestrating
+AI coding agents across a fleet of local and remote Herdr multiplexer nodes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+STANDARD_HERDR_PATHS = [
+    Path.home() / ".local" / "bin" / "herdr",
+    Path.home() / ".nix-profile" / "bin" / "herdr",
+    Path("/usr/local/bin/herdr"),
+    Path("/run/current-system/sw/bin/herdr"),
+]
+
+
+def resolve_herdr() -> str:
+    """Find herdr executable."""
+    if "HERDR_BIN_PATH" in os.environ and os.path.exists(os.environ["HERDR_BIN_PATH"]):
+        return os.environ["HERDR_BIN_PATH"]
+    found = shutil.which("herdr")
+    if found:
+        return found
+    for p in STANDARD_HERDR_PATHS:
+        if p.exists() and os.access(p, os.X_OK):
+            return str(p)
+    return "herdr"
+
+
+def run_herdr(args: List[str], machine: Optional[str] = None, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    """Run herdr CLI command."""
+    h_bin = resolve_herdr()
+    cmd = [h_bin]
+    if machine and machine not in {"local", "localhost"}:
+        cmd.extend(["--machine", machine])
+    cmd.extend(args)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout)
+    except subprocess.CalledProcessError as e:
+        return e
+    except Exception as e:
+        return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(e))
+
+
+def get_machines(probe: bool = False) -> List[Dict[str, Any]]:
+    """Get list of configured machines (local + remote)."""
+    machines: List[Dict[str, Any]] = [
+        {
+            "id": "local",
+            "label": "local",
+            "target": "localhost",
+            "enabled": True,
+            "status": "unknown",
+        }
+    ]
+
+    res = run_herdr(["machine", "list", "--json"], timeout=5)
+    if res.returncode == 0 and res.stdout:
+        try:
+            remotes = json.loads(res.stdout)
+            if isinstance(remotes, list):
+                for r in remotes:
+                    r["status"] = "unknown"
+                    machines.append(r)
+        except Exception:
+            pass
+
+    if probe:
+        # Check server status on each machine
+        for m in machines:
+            target = None if m.get("label") == "local" else m.get("label") or m.get("id")
+            s_res = run_herdr(["status", "server"], machine=target, timeout=5)
+            if s_res.returncode == 0 and "running" in s_res.stdout.lower():
+                m["status"] = "online"
+            else:
+                m["status"] = "offline"
+
+    return machines
+
+
+def get_workspace_map(machine: Optional[str] = None) -> Dict[str, str]:
+    """Map workspace_id -> label for a machine."""
+    ws_map: Dict[str, str] = {}
+    res = run_herdr(["workspace", "list"], machine=machine, timeout=10)
+    if res.returncode == 0 and res.stdout:
+        try:
+            data = json.loads(res.stdout)
+            workspaces = data.get("result", {}).get("workspaces", [])
+            for w in workspaces:
+                ws_id = w.get("workspace_id")
+                label = w.get("label") or f"Workspace {w.get('number', '')}"
+                if ws_id:
+                    ws_map[ws_id] = label
+        except Exception:
+            pass
+    return ws_map
+
+
+def clean_title(title: str) -> str:
+    """Strip redundant terminal prefixes from title."""
+    t = title.strip()
+    t = re.sub(r"^[π*•\-]\s*[-–]\s*", "", t)
+    return t
+
+
+def derive_description(agent: Dict[str, Any], title: str, cwd: str) -> str:
+    """Derive a friendly task/topic description from session and title."""
+    session = agent.get("agent_session", {})
+    if isinstance(session, dict) and session.get("value"):
+        return str(session.get("value"))
+
+    parts = [
+        p.strip()
+        for p in title.split(" - ")
+        if p.strip() and p.strip() not in {"π", "claude", "codex", "opencode", "hermes"}
+    ]
+    if parts:
+        return parts[0]
+
+    if cwd:
+        return Path(cwd).name
+    return ""
+
+
+def get_all_agents(machine_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Collect agents with enriched metadata from local or all connected machines."""
+    all_agents: List[Dict[str, Any]] = []
+    machines = get_machines()
+
+    for m in machines:
+        if not m.get("enabled", True):
+            continue
+        m_label = m.get("label", m.get("id"))
+
+        if machine_filter and machine_filter != "all":
+            if machine_filter != m_label and machine_filter != m.get("id"):
+                continue
+
+        target = None if m_label in {"local", "localhost"} else m_label
+        ws_map = get_workspace_map(machine=target)
+
+        res = run_herdr(["agent", "list"], machine=target, timeout=10)
+        if res.returncode != 0 or not res.stdout:
+            continue
+        try:
+            data = json.loads(res.stdout)
+            agents = data.get("result", {}).get("agents", [])
+            for a in agents:
+                ws_id = a.get("workspace_id", "")
+                ws_label = ws_map.get(ws_id, ws_id)
+                raw_title = a.get("terminal_title_stripped") or a.get("terminal_title") or ""
+                title = clean_title(raw_title)
+                cwd = a.get("cwd") or a.get("foreground_cwd") or ""
+                desc = derive_description(a, raw_title, cwd)
+
+                enriched = {
+                    "machine": m_label,
+                    "agent_type": a.get("agent", "unknown"),
+                    "status": a.get("agent_status", "unknown"),
+                    "title": title or "(no title)",
+                    "description": desc,
+                    "cwd": cwd,
+                    "workspace_id": ws_id,
+                    "workspace_label": ws_label,
+                    "pane_id": a.get("pane_id", ""),
+                    "tab_id": a.get("tab_id", ""),
+                    "focused": a.get("focused", False),
+                    "session": a.get("agent_session"),
+                }
+                all_agents.append(enriched)
+        except Exception:
+            continue
+
+    return all_agents
+
+
+# ── CLI Handlers ──────────────────────────────────────────────────────────────
+
+
+def handle_machines(args: argparse.Namespace) -> int:
+    """Handle `machines` subcommand."""
+    machines = get_machines(probe=args.probe)
+    if args.json:
+        print(json.dumps(machines, indent=2))
+        return 0
+
+    BOLD = "\033[1m"
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    RESET = "\033[0m"
+
+    print(f"\n{BOLD}{CYAN}══ Herdr Fleet Machines ══{RESET}\n")
+    header = f"{'LABEL':<18} {'STATUS':<10} {'TARGET':<30} {'SESSION':<12} {'ENABLED'}"
+    print(f"{BOLD}{header}{RESET}")
+    print("─" * 80)
+    for m in machines:
+        lbl = m.get("label", m.get("id", ""))
+        target = m.get("target", "-")
+        session = m.get("session", "default")
+        enabled = "yes" if m.get("enabled", True) else "no"
+        st = m.get("status", "unknown")
+        st_color = GREEN if st == "online" else (RED if st == "offline" else "")
+        st_str = f"{st_color}{st}{RESET}" if st_color else st
+        print(f"{lbl:<18} {st_str:<19} {target:<30} {session:<12} {enabled}")
+    print()
+    return 0
+
+
+def handle_overview(args: argparse.Namespace) -> int:
+    """Handle `overview` subcommand."""
+    agents = get_all_agents(machine_filter=args.machine)
+    if args.json:
+        print(json.dumps(agents, indent=2))
+        return 0
+
+    BOLD = "\033[1m"
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    MAGENTA = "\033[35m"
+    RESET = "\033[0m"
+
+    print(f"\n{BOLD}{CYAN}══ Herdr Fleet Agent Overview ══{RESET}\n")
+    if not agents:
+        print("  No active agents running on configured machines.\n")
+        return 0
+
+    header = f"{'MACHINE':<14} {'AGENT TYPE':<12} {'STATUS':<10} {'WORKSPACE':<16} {'TITLE':<24} {'DIRECTORY (CWD)'}"
+    print(f"{BOLD}{header}{RESET}")
+    print("─" * 105)
+
+    for a in agents:
+        machine = a.get("machine", "local")
+        agent_type = a.get("agent_type", "agent")
+        status = a.get("status", "unknown")
+        ws_display = f"{a.get('workspace_label')} ({a.get('workspace_id')})" if a.get("workspace_id") else a.get("workspace_label", "-")
+        title = a.get("title", "")
+        cwd = a.get("cwd", "")
+        desc = a.get("description", "")
+
+        ws_str = ws_display[:15]
+        title_str = title[:23]
+
+        if status == "idle":
+            status_str = f"{GREEN}idle{RESET}"
+        elif status == "running":
+            status_str = f"{YELLOW}running{RESET}"
+        elif status == "blocked" or status == "needs-attention":
+            status_str = f"{MAGENTA}attention{RESET}"
+        else:
+            status_str = status
+
+        print(f"{machine:<14} {agent_type:<12} {status_str:<19} {ws_str:<16} {title_str:<24} {cwd}")
+        if args.detailed and desc:
+            print(f"   ↳ Task/Desc: {desc} (pane: {a.get('pane_id', '')})")
+
+    print()
+    return 0
+
+
+def handle_spawn(args: argparse.Namespace) -> int:
+    """Handle `spawn` subcommand."""
+    machine = args.machine if args.machine not in {"local", "localhost"} else None
+    split_args = ["pane", "split", "--direction", args.direction]
+    if args.cwd:
+        split_args.extend(["--cwd", args.cwd])
+
+    split_res = run_herdr(split_args, machine=machine)
+    if split_res.returncode != 0:
+        err = f"Failed to split pane: {split_res.stderr.strip() or split_res.stdout.strip()}"
+        if args.json:
+            print(json.dumps({"error": err}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    pane_id = ""
+    try:
+        data = json.loads(split_res.stdout)
+        pane_id = data.get("result", {}).get("pane_id", "")
+    except Exception:
+        pass
+
+    if not pane_id:
+        # Fallback to inspecting pane list
+        p_res = run_herdr(["pane", "list"], machine=machine)
+        try:
+            p_data = json.loads(p_res.stdout)
+            panes = p_data.get("result", {}).get("panes", [])
+            if panes:
+                pane_id = panes[-1].get("pane_id", "")
+        except Exception:
+            pass
+
+    start_args = ["agent", "start", args.name, "--kind", args.kind]
+    if pane_id:
+        start_args.extend(["--pane", pane_id])
+
+    start_res = run_herdr(start_args, machine=machine)
+    if start_res.returncode != 0:
+        err = f"Failed to start agent: {start_res.stderr.strip() or start_res.stdout.strip()}"
+        if args.json:
+            print(json.dumps({"error": err, "pane_id": pane_id}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    prompt_res = None
+    if args.prompt:
+        p_args = ["agent", "prompt", args.name, args.prompt]
+        if args.wait:
+            p_args.append("--wait")
+        prompt_res = run_herdr(p_args, machine=machine, timeout=120 if args.wait else 30)
+
+    result = {
+        "status": "success",
+        "agent": args.name,
+        "kind": args.kind,
+        "machine": args.machine or "local",
+        "pane_id": pane_id,
+        "prompted": bool(args.prompt),
+        "waited": args.wait,
+    }
+    if prompt_res and prompt_res.returncode != 0:
+        result["prompt_warning"] = prompt_res.stderr.strip() or prompt_res.stdout.strip()
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Spawned {args.kind} agent '{args.name}' on {args.machine or 'local'} (pane: {pane_id})")
+        if args.prompt:
+            print(f"Injected initial prompt: {args.prompt[:60]}...")
+    return 0
+
+
+def handle_prompt(args: argparse.Namespace) -> int:
+    """Handle `prompt` subcommand."""
+    machine = args.machine if args.machine not in {"local", "localhost"} else None
+    cmd = ["agent", "prompt", args.target, args.prompt]
+    if args.wait:
+        cmd.append("--wait")
+
+    res = run_herdr(cmd, machine=machine, timeout=120 if args.wait else 30)
+    if res.returncode != 0:
+        err = f"Failed to prompt agent: {res.stderr.strip() or res.stdout.strip()}"
+        if args.json:
+            print(json.dumps({"error": err, "target": args.target}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps({"status": "success", "target": args.target, "machine": args.machine or "local"}))
+    else:
+        print(f"Prompt sent to '{args.target}' on {args.machine or 'local'}")
+    return 0
+
+
+def handle_read(args: argparse.Namespace) -> int:
+    """Handle `read` subcommand."""
+    machine = args.machine if args.machine not in {"local", "localhost"} else None
+    cmd = ["agent", "read", args.target, "--lines", str(args.lines)]
+    res = run_herdr(cmd, machine=machine)
+    if res.returncode != 0:
+        err = f"Failed to read agent: {res.stderr.strip() or res.stdout.strip()}"
+        if args.json:
+            print(json.dumps({"error": err, "target": args.target}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    output_text = res.stdout
+    if args.json:
+        print(json.dumps({"target": args.target, "machine": args.machine or "local", "content": output_text}))
+    else:
+        print(output_text, end="")
+    return 0
+
+
+def handle_status(args: argparse.Namespace) -> int:
+    """Handle `status` subcommand."""
+    machine = args.machine if args.machine not in {"local", "localhost"} else None
+    res = run_herdr(["status", "server"], machine=machine)
+    if res.returncode != 0:
+        err = f"Failed to get status: {res.stderr.strip() or res.stdout.strip()}"
+        if args.json:
+            print(json.dumps({"error": err, "machine": args.machine or "local"}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps({"machine": args.machine or "local", "raw": res.stdout}))
+    else:
+        print(res.stdout, end="")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="herdr-agent-gateway",
+        description="Unified CLI for discovering, inspecting, and orchestrating Herdr fleet agents.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # machines
+    p_mach = subparsers.add_parser("machines", help="List all configured fleet machines")
+    p_mach.add_argument("--json", action="store_true", help="Output as JSON")
+    p_mach.add_argument("--probe", action="store_true", help="Probe reachability of each machine")
+    p_mach.set_defaults(func=handle_machines)
+
+    # overview
+    p_over = subparsers.add_parser("overview", help="List active agents across the fleet")
+    p_over.add_argument("--machine", default="all", help="Target machine or 'all' (default: all)")
+    p_over.add_argument("--json", action="store_true", help="Output as JSON")
+    p_over.add_argument("-d", "--detailed", action="store_true", help="Include task descriptions")
+    p_over.set_defaults(func=handle_overview)
+
+    # spawn
+    p_spawn = subparsers.add_parser("spawn", help="Split a pane and spawn a coding agent")
+    p_spawn.add_argument("--kind", required=True, help="Agent kind (pi, claude, opencode, codex, cursor, etc.)")
+    p_spawn.add_argument("--name", required=True, help="Agent name/session label")
+    p_spawn.add_argument("--machine", default="local", help="Target machine label or profile ID (default: local)")
+    p_spawn.add_argument("--cwd", default="", help="Working directory for the agent pane")
+    p_spawn.add_argument("--direction", choices=["right", "down", "left", "up"], default="right", help="Split direction")
+    p_spawn.add_argument("--prompt", default="", help="Initial prompt to inject into agent")
+    p_spawn.add_argument("--wait", action="store_true", help="Wait for agent to settle into idle after prompting")
+    p_spawn.add_argument("--json", action="store_true", help="Output result as JSON")
+    p_spawn.set_defaults(func=handle_spawn)
+
+    # prompt
+    p_prompt = subparsers.add_parser("prompt", help="Inject prompt into an active agent pane")
+    p_prompt.add_argument("target", help="Agent name or pane ID")
+    p_prompt.add_argument("prompt", help="Prompt text to inject")
+    p_prompt.add_argument("--machine", default="local", help="Target machine label or profile ID")
+    p_prompt.add_argument("--wait", action="store_true", help="Wait for agent to settle into idle")
+    p_prompt.add_argument("--json", action="store_true", help="Output result as JSON")
+    p_prompt.set_defaults(func=handle_prompt)
+
+    # read
+    p_read = subparsers.add_parser("read", help="Read output from an agent pane")
+    p_read.add_argument("target", help="Agent name or pane ID")
+    p_read.add_argument("--machine", default="local", help="Target machine label or profile ID")
+    p_read.add_argument("-n", "--lines", type=int, default=100, help="Number of lines to read")
+    p_read.add_argument("--json", action="store_true", help="Output result as JSON")
+    p_read.set_defaults(func=handle_read)
+
+    # status
+    p_stat = subparsers.add_parser("status", help="Check Herdr server daemon status")
+    p_stat.add_argument("--machine", default="local", help="Target machine label or profile ID")
+    p_stat.add_argument("--json", action="store_true", help="Output result as JSON")
+    p_stat.set_defaults(func=handle_status)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
