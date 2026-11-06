@@ -1,14 +1,10 @@
-# AGENTS.md — Herdr Agent Gateway
+# AGENTS.md — Herdr Agent Gateway [DEPRECATED / RETIRED]
 
-## 🎯 Project Overview
-**Herdr Agent Gateway** is a secure, authenticated integration layer for the **Herdr** terminal multiplexer. It allows external and remote AI coding agents (Claude Code, OpenCode, Cursor, Codex, etc.) to securely request workspace pane splits, register agent sessions, and inject execution prompts into a local developer workstation running Herdr.
-
-The project provides **three primary client interfaces**:
-1. **Agent Skill & POSIX CLI** (`skills/spawn_herdr_agent/` + `scripts/agent-spawn-remote`): For CLI-based agents running a portable bash/python script over LAN/VPN.
-2. **MCP Server** (`packages/mcp-server/`): For tool-calling agents speaking the Model Context Protocol directly over SSE/Stdio/HTTP.
-3. **Hermes Plugin** (`plugin.yaml` + `hermes_herdr/`): For [Hermes Agent](https://github.com/NousResearch/hermes-agent) running locally or remotely (NixOS / `hermes plugins install`).
-
-Tracked in OpenProject as **`OP#358`** (Project: `pikujs-server`).
+> [!WARNING]
+> **PROJECT RETIRED (2026-11-07)**
+> This project has been retired and is superseded by **Herdr Core** (`hc`) and **Herdr v0.9.5+**.
+> Do not build or extend features here. Cluster agents are now managed natively via `hc run --bg`, `hc ls`, and `herdr machine status`.
+> Tracked in OpenProject as **`OP#358`**.
 
 ---
 

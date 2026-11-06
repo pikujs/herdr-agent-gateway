@@ -2,22 +2,23 @@
 
 # Herdr Agent Gateway
 
-**Multi-machine fleet orchestration CLI and universal agent skill for the [Herdr](https://herdr.dev) terminal multiplexer.**
+**[DEPRECATED / RETIRED] Multi-machine fleet orchestration CLI and universal agent skill for the [Herdr](https://herdr.dev) terminal multiplexer.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: Retired](https://img.shields.io/badge/Status-Retired-red.svg)](https://herdr.dev)
 [![Herdr](https://img.shields.io/badge/Herdr-v0.9+-3b82f6.svg)](https://herdr.dev)
-[![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3.svg?logo=nixos&logoColor=white)](flake.nix)
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
-
-<p align="center">
-  <a href="#-overview">Overview</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-cli-commands">CLI Commands</a> •
-  <a href="#-universal-agent-skill">Agent Skill</a> •
-  <a href="#-declarative-nixos--home-manager-configuration">Nix Configuration</a>
-</p>
 
 </div>
+
+> [!WARNING]
+> ### 🛑 Project Retired & Deprecated (November 2026)
+> This repository is **deprecated and retired**. All multi-machine agent orchestration, cluster terminal overview, and background agent execution features are natively superseded by **Herdr Core** (`hc` CLI) and **Herdr v0.9.5+**:
+> - **Cluster Overview**: `hc ls` natively lists and aggregates active sessions/panes across all machines in the cluster.
+> - **Machine Management**: `hc machine ls` and `herdr machine status --json` monitor SSH peers directly.
+> - **One-Shot Agent Execution**: `hc run --bg --on <machine> --name <name> <agent> "<prompt>"` provides native background agent dispatch and prompting across machines.
+> - **Agent Controls**: `hc send`, `hc read`, `hc wait` natively replace custom wrappers.
+>
+> Nix flake inputs and global agent skills referencing this repository have been removed across the fleet.
 
 ---
 
