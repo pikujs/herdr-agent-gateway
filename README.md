@@ -12,11 +12,11 @@
 
 > [!WARNING]
 > ### 🛑 Project Retired & Deprecated (November 2026)
-> This repository is **deprecated and retired**. All multi-machine agent orchestration, cluster terminal overview, and background agent execution features are natively superseded by **Herdr Core** (`hc` CLI) and **Herdr v0.9.5+**:
-> - **Cluster Overview**: `hc ls` natively lists and aggregates active sessions/panes across all machines in the cluster.
-> - **Machine Management**: `hc machine ls` and `herdr machine status --json` monitor SSH peers directly.
-> - **One-Shot Agent Execution**: `hc run --bg --on <machine> --name <name> <agent> "<prompt>"` provides native background agent dispatch and prompting across machines.
-> - **Agent Controls**: `hc send`, `hc read`, `hc wait` natively replace custom wrappers.
+> This repository is **deprecated and retired**. Multi-machine agent orchestration and terminal controls are natively provided by the **Herdr CLI** (v0.9.5+) and **Herdr Core** (`hc` CLI):
+> - **Agent Management**: `herdr agent start`, `herdr agent prompt --wait`, `herdr agent read`, and `herdr agent wait` manage recognized coding agents natively.
+> - **Pane & Layout Control**: `herdr pane split`, `herdr pane run`, and `herdr pane wait-output`.
+> - **Multi-Machine SSH Control**: `herdr --machine <label-or-id> agent ...` and `herdr machine status` control saved remote machines directly.
+> - **Cluster-Wide Execution**: `hc ls` and `hc run --bg` manage cluster-wide background processes.
 >
 > Nix flake inputs and global agent skills referencing this repository have been removed across the fleet.
 
